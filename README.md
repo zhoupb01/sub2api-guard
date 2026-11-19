@@ -26,3 +26,13 @@ docker compose logs -f sub2api-guard
 默认 `DRY_RUN=1`，记录决策和调整时间，模拟容量与调度变化，不调用 API 或 Bark。模拟的容量与调度在进程重启时从数据库重新读取，调整时间仍留在状态文件里。
 
 确认日志后，在 sub2api 管理后台 → 设置 → Admin API Key 获取密钥。将 `ADMIN_API_KEY` 填入 `.env`，把 `DRY_RUN` 改为 `0`，并将 `STATE_FILE` 改为 `/data/live-state.json`，让实跑使用独立的调整记录。再运行 `docker compose up -d`。
+
+## 测试单个账号
+
+在 `.env` 设置 `SUB2API_URL`、全权限的 `ADMIN_API_KEY` 和测试专用的普通用户密钥 `PROBE_API_KEY`（`sk-…`）。`PROBE_GROUP_NAME` 默认是 `账号测试`。脚本会创建专属 OpenAI 分组（若已存在，请确保它是测试专用分组），并把测试密钥绑定到该组。
+
+```sh
+docker compose exec sub2api-guard bun run src/probe.ts --model gpt-6.1-sol --prompt "你好，请介绍一下自己" 135 146 149
+```
+
+脚本按顺序测试账号，用完后恢复原调度状态和分组。一次只运行一个测试进程。支持 `--repeat n`，默认每个账号请求一次。也可以把提示词放在 `./data/prompt.txt`，用 `--prompt-file /data/prompt.txt` 代替 `--prompt`。测试无需 `DATABASE_URL`，适用于按分组调度的标准模式和默认的 1 秒调度轮询间隔。
