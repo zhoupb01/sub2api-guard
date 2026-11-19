@@ -14,6 +14,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     dryRun,
     barkUrl: env.BARK_URL,
     stateFile: env.STATE_FILE ?? "/data/state.json",
+    webPort: Number(env.WEB_PORT ?? 8080),
     errorPatterns: JSON.parse(env.ERROR_PATTERNS ?? '["overloaded","Concurrency limit exceeded for account"]') as string[],
     policy: {
       maxConcurrency: Number(env.MAX_CONCURRENCY ?? 3),

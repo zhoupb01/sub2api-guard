@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>sub2api-guard · 状态</title>
+<style>
+  :root {
+    --ink: #17191f;
+    --muted: #6d7480;
+    --faint: #9ba2ad;
+    --line: #e9ebef;
+    --line-strong: #d6dae1;
+    --track: #eef0f4;
+    --surface: #fbfbfc;
+    --accent: #3b3fd8;
+    --accent-soft: #ededfd;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: #fff;
+    color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0 0 auto 0;
+    height: 3px;
+    background: var(--accent);
+  }
+  .page { max-width: 880px; margin: 0 auto; padding: 44px 24px 56px; }
+  h1, h2, h3 { margin: 0; font-weight: 600; }
+  .figure, time { font-variant-numeric: tabular-nums; }
+
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 20px 32px;
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--line);
+  }
+  .title { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+  h1 { font-size: 21px; letter-spacing: -0.015em; }
+  .group { font-size: 13px; color: var(--muted); }
+  .group b { font-weight: 600; color: var(--ink); }
+  .badge {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .badge[data-mode="live"] { background: var(--ink); color: #fff; }
+
+  .meta { display: flex; gap: 28px; margin: 0; }
+  .meta div { display: flex; flex-direction: column; gap: 2px; }
+  .meta dt { font-size: 11px; letter-spacing: 0.08em; color: var(--faint); }
+  .meta dd { margin: 0; font-size: 14px; font-variant-numeric: tabular-nums; }
+
+  .alert {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    align-items: baseline;
+    margin-top: 20px;
+    padding: 10px 14px;
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .alert span { color: var(--muted); overflow-wrap: anywhere; }
+  .alert[hidden] { display: none; }
+
+  section { margin-top: 40px; }
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  h2 { font-size: 13px; letter-spacing: 0.14em; color: var(--muted); font-weight: 600; }
+  .count { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+  .accounts { border-top: 1px solid var(--line); }
+  .account { padding: 18px 0 16px; border-bottom: 1px solid var(--line); }
+  .account[data-closed="true"] .head h3 { color: var(--muted); }
+  .head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; }
+  .head h3 { font-size: 15px; overflow-wrap: anywhere; }
+  .account-id { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .state i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+  .state[data-kind="cooldown"] { color: var(--accent); }
+  .state[data-kind="cooldown"] i { background: var(--accent); }
+  .state[data-kind="unusable"] i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--faint); }
+  .state[data-kind="closed"] i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--line-strong); }
+  .state[data-kind="closed"] { color: var(--faint); }
+
+  .facts {
+    display: grid;
+    grid-template-columns: 92px minmax(200px, 1fr) 104px 104px;
+    align-items: center;
+    gap: 8px 24px;
+    margin-top: 8px;
+  }
+  .fact { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .label { font-size: 11px; color: var(--faint); letter-spacing: 0.04em; white-space: nowrap; }
+  .value { display: flex; align-items: center; gap: 8px; font-size: 13px; white-space: nowrap; }
+  .value .figure { font-weight: 600; }
+  .value .figure.over { color: var(--accent); }
+  .quiet { color: var(--muted); font-size: 13px; }
+
+  .blocks { display: inline-flex; gap: 3px; }
+  .block { width: 8px; height: 14px; border-radius: 2px; box-shadow: inset 0 0 0 1.5px var(--line-strong); }
+  .block.on { background: var(--ink); box-shadow: none; }
+
+  .track { position: relative; flex: 1; min-width: 90px; height: 6px; border-radius: 3px; background: var(--track); }
+  .track i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--faint); }
+  .track.over i { background: var(--accent); }
+  .track b { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--line-strong); }
+
+  .timeline { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+  .timeline li {
+    display: grid;
+    grid-template-columns: 62px 62px minmax(0, 1fr) auto 62px;
+    grid-template-areas: "time tag who change why";
+    align-items: baseline;
+    gap: 4px 12px;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
+  }
+  .timeline time { grid-area: time; color: var(--faint); font-size: 12px; }
+  .tag { grid-area: tag; font-size: 12px; color: var(--muted); }
+  .timeline li[data-attention="true"] .tag { color: var(--accent); }
+  .who { grid-area: who; color: var(--ink); overflow-wrap: anywhere; }
+  .change { grid-area: change; font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+  .change b { color: var(--faint); font-weight: 400; margin: 0 3px; }
+  .why { grid-area: why; text-align: right; font-variant-numeric: tabular-nums; color: var(--faint); font-size: 12px; white-space: nowrap; }
+  .empty { padding: 16px 0; border-bottom: 1px solid var(--line); color: var(--faint); font-size: 14px; }
+
+  footer { margin-top: 36px; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+  @media (max-width: 699px) {
+    .page { padding: 34px 18px 48px; }
+    .meta { gap: 22px; }
+    .facts { grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+    .fact-rate { grid-column: 1 / -1; }
+    .timeline li {
+      grid-template-columns: 56px auto 1fr;
+      grid-template-areas:
+        "time tag change"
+        "who who why";
+      padding: 12px 0;
+    }
+    .why { text-align: right; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <div class="title">
+      <h1>sub2api-guard</h1>
+      <span class="group">第 <b id="group">—</b> 组</span>
+      <span class="badge" id="mode">—</span>
+    </div>
+    <dl class="meta">
+      <div><dt>上次检查</dt><dd id="last-tick">—</dd></div>
+      <div><dt>错误率阈值</dt><dd id="threshold">—</dd></div>
+    </dl>
+  </header>
+
+  <div class="alert" id="alert" hidden></div>
+
+  <section>
+    <div class="section-head"><h2>账号</h2><span class="count" id="account-count"></span></div>
+    <div class="accounts" id="accounts"></div>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>决策</h2><span class="count" id="decision-count"></span></div>
+    <ol class="timeline" id="decisions"></ol>
+  </section>
+
+  <footer id="updated">正在加载…</footer>
+</div>
+<script>
+  const clockFormat = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const eventLabels = {
+    decrease: "降容量",
+    increase: "升容量",
+    close: "关闭调度",
+    floor_blocked: "保底拦截",
+  };
+  const attentionEvents = new Set(["decrease", "close", "floor_blocked"]);
+
+  const nodes = {
+    group: document.querySelector("#group"),
+    mode: document.querySelector("#mode"),
+    lastTick: document.querySelector("#last-tick"),
+    threshold: document.querySelector("#threshold"),
+    alert: document.querySelector("#alert"),
+    accounts: document.querySelector("#accounts"),
+    accountCount: document.querySelector("#account-count"),
+    decisions: document.querySelector("#decisions"),
+    decisionCount: document.querySelector("#decision-count"),
+    updated: document.querySelector("#updated"),
+  };
+
+  function h(tag, className, ...children) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    for (const child of children) {
+      if (child === null || child === undefined || child === false) continue;
+      node.append(child instanceof Node ? child : String(child));
+    }
+    return node;
+  }
+
+  const formatClock = (value) => clockFormat.format(new Date(value));
+  const formatRate = (rate) => `${(rate * 100).toFixed(1)}%`;
+
+  function relativeTime(value, now) {
+    if (!value) return "从未";
+    const minutes = Math.round((now - Date.parse(value)) / 60000);
+    if (minutes <= 0) return "刚刚";
+    if (minutes < 60) return `${minutes} 分钟前`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours} 小时前`;
+    return `${Math.round(hours / 24)} 天前`;
+  }
+
+  function accountState(account, policy, now) {
+    if (account.closed) return { label: "已关闭", kind: "closed" };
+    if (!account.usable) return { label: "暂不可用", kind: "unusable" };
+    const changedAt = account.lastChangeAt ? Date.parse(account.lastChangeAt) : 0;
+    if (now - changedAt < policy.cooldownMinutes * 60000) return { label: "冷却中", kind: "cooldown" };
+    return { label: "可调度", kind: "ok" };
+  }
+
+  function rateBar(recent, policy) {
+    // The track covers three times the policy threshold, so small rates stay readable.
+    const scale = Math.max(policy.errorRate * 3, 0.03);
+    const over = recent.rate >= policy.errorRate;
+    const track = h("span", over ? "track over" : "track", h("i"), h("b"));
+    track.querySelector("i").style.width = `${Math.min(recent.rate / scale, 1) * 100}%`;
+    track.querySelector("b").style.left = `${Math.min(policy.errorRate / scale, 1) * 100}%`;
+    return track;
+  }
+
+  function capacityBlocks(account) {
+    const blocks = h("span", "blocks");
+    const count = Math.max(account.maxConcurrency, account.concurrency);
+    for (let index = 0; index < count; index += 1) {
+      blocks.append(h("i", index < account.concurrency ? "block on" : "block"));
+    }
+    return blocks;
+  }
+
+  function renderAccount(account, policy, now) {
+    const state = accountState(account, policy, now);
+    const stateNode = h("span", "state", h("i"), state.label);
+    stateNode.dataset.kind = state.kind;
+    const head = h("div", "head", h("h3", null, account.name), h("span", "account-id", `#${account.id}`), stateNode);
+
+    const over = account.recent.rate >= policy.errorRate;
+    const facts = h("div", "facts",
+      h("div", "fact",
+        h("span", "label", "容量"),
+        h("span", "value", capacityBlocks(account), h("span", "figure", `${account.concurrency} / ${account.maxConcurrency}`)),
+      ),
+      h("div", "fact fact-rate",
+        h("span", "label", `近 ${policy.windowMinutes} 分钟错误率`),
+        h("span", "value",
+          h("span", over ? "figure over" : "figure", formatRate(account.recent.rate)),
+          rateBar(account.recent, policy),
+        ),
+      ),
+      h("div", "fact",
+        h("span", "label", "错误 / 总数"),
+        h("span", "value", h("span", "figure", `${account.recent.errors} / ${account.recent.total}`)),
+      ),
+      h("div", "fact",
+        h("span", "label", "上次调整"),
+        h("span", "value", h("span", "quiet", relativeTime(account.lastChangeAt, now))),
+      ),
+    );
+
+    const article = h("article", "account", head, facts);
+    article.dataset.closed = String(account.closed);
+    return article;
+  }
+
+  function renderDecision(record) {
+    const after = record.event === "close"
+      ? "关闭"
+      : record.event === "floor_blocked" ? "保留" : String(record.nextConcurrency);
+    const item = h("li", null,
+      h("time", null, formatClock(record.ts)),
+      h("span", "tag", eventLabels[record.event] ?? record.event),
+      h("span", "who", `#${record.id} ${record.name}`),
+      h("span", "change", record.concurrency, h("b", null, "→"), after),
+      h("span", "why", formatRate(record.rate)),
+    );
+    item.dataset.attention = String(attentionEvents.has(record.event));
+    return item;
+  }
+
+  function render(data) {
+    const now = Date.parse(data.now);
+    nodes.group.textContent = data.groupId;
+    nodes.mode.textContent = data.dryRun ? "演练模式" : "实跑";
+    nodes.mode.dataset.mode = data.dryRun ? "dry" : "live";
+    nodes.lastTick.textContent = data.lastTickAt ? formatClock(data.lastTickAt) : "尚未完成";
+    nodes.lastTick.title = data.lastTickAt ?? "";
+    nodes.threshold.textContent = formatRate(data.policy.errorRate);
+
+    if (data.lastError) {
+      nodes.alert.hidden = false;
+      nodes.alert.replaceChildren(
+        h("b", null, `${formatClock(data.lastError.ts)} 检查失败`),
+        h("span", null, data.lastError.message),
+      );
+    } else {
+      nodes.alert.hidden = true;
+    }
+
+    const accounts = data.accounts.map((account) => renderAccount(account, data.policy, now));
+    nodes.accounts.replaceChildren(...(accounts.length ? accounts : [h("p", "empty", "暂无账号数据")]));
+    nodes.accountCount.textContent = `${data.accounts.length} 个`;
+
+    const decisions = data.decisions.map(renderDecision);
+    nodes.decisions.replaceChildren(...(decisions.length ? decisions : [h("li", "empty", "暂无决策")]));
+    nodes.decisionCount.textContent = `最近 ${data.decisions.length} 条`;
+  }
+
+  async function refresh() {
+    try {
+      const response = await fetch("/api/status", { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      render(await response.json());
+      nodes.updated.textContent = `更新于 ${formatClock(new Date())}`;
+    } catch (error) {
+      nodes.updated.textContent = `刷新失败，稍后重试 · ${error.message}`;
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 15000);
+</script>
+</body>
+</html>

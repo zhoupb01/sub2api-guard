@@ -4,6 +4,8 @@ import { openDatabase } from "./db";
 import { decide, minute, recentSince, trafficStats } from "./decide";
 import { noChange, openState } from "./state";
 import { openAdminApi } from "./sub2api";
+import { startStatusServer } from "./web/server";
+import { createStatusStore } from "./web/store";
 
 function log(event: string, fields: Record<string, unknown>) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
@@ -22,6 +24,13 @@ async function run() {
   // A simulated close uses null and stays out of the account list for this run.
   const simulated = new Map<number, number | null>();
   let loadedState: Awaited<ReturnType<typeof openState>> | undefined;
+  const store = createStatusStore({ groupId: config.groupId, dryRun, policy });
+  try {
+    startStatusServer(store, config.webPort);
+    log("web_server", { port: config.webPort });
+  } catch (error) {
+    logError("web_server", error, { port: config.webPort });
+  }
 
   while (true) {
     const now = Date.now();
@@ -50,6 +59,7 @@ async function run() {
         };
       });
       const samplesById = new Map(samples.map((account) => [account.id, account]));
+      store.recordTick({ now: nowIso, accounts: samples });
 
       for (const { id, concurrency, recent } of samples) {
         const previousSummary = lastSummaryAt.get(id);
@@ -67,7 +77,7 @@ async function run() {
         const thresholds = event === "increase"
           ? { maxConcurrency: decision.maxConcurrency, healthyMinutes: policy.healthyMinutes, healthyRate: policy.healthyRate }
           : { minRequests: policy.minRequests, errorRate: policy.errorRate, cooldownMinutes: policy.cooldownMinutes };
-        log(event, {
+        const fields = {
           id,
           name: account.name,
           concurrency: account.concurrency,
@@ -80,7 +90,9 @@ async function run() {
           since,
           lastChangeAt: account.lastChangeAt ?? null,
           dryRun,
-        });
+        };
+        log(event, fields);
+        store.addDecision({ ts: nowIso, event, ...fields });
 
         if (event !== "floor_blocked") {
           const nextCapacity = "concurrency" in decision ? decision.concurrency : null;
@@ -116,6 +128,7 @@ async function run() {
       }
     } catch (error) {
       logError("tick", error);
+      store.recordError(nowIso, error instanceof Error ? error.message : String(error));
     }
     await Bun.sleep(Math.max(0, config.tickSeconds * 1_000 - (Date.now() - now)));
   }
