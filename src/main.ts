@@ -26,7 +26,7 @@ async function run() {
   let loadedState: Awaited<ReturnType<typeof openState>> | undefined;
   const store = createStatusStore({ groupId: config.groupId, dryRun, policy });
   try {
-    startStatusServer(store, config.webPort);
+    startStatusServer(store, config.webPort, config.webPassword);
     log("web_server", { port: config.webPort });
   } catch (error) {
     logError("web_server", error, { port: config.webPort });

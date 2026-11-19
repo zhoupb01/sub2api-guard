@@ -10,7 +10,9 @@
 
 ## 部署
 
-在已运行 sub2api 的服务器上，将仓库放在独立目录。Compose 使用已有的 `sub2api-deploy_sub2api-network`，服务无需开放端口。
+在已运行 sub2api 和 Traefik 的服务器上，将仓库放在独立目录。Compose 加入已有的 `sub2api-deploy_sub2api-network` 和 `proxy` 网络，不发布宿主机端口。将 `sub2api-guard.zhoupb.com` 的 DNS 指向 Traefik 所在的服务器。
+
+在 `.env` 设置共享密码 `WEB_PASSWORD`，然后访问 <https://sub2api-guard.zhoupb.com> 登录。会话有效期为 30 天。更换密码并重建容器后，所有人都需要重新登录。密码留空时，状态页不启动，守护循环继续运行。
 
 ```sh
 cp .env.example .env
