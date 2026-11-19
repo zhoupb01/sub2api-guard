@@ -7,215 +7,471 @@
 <title>sub2api-guard · 状态</title>
 <style>
   :root {
-    --ink: #17191f;
-    --muted: #6d7480;
-    --faint: #9ba2ad;
-    --line: #e9ebef;
-    --line-strong: #d6dae1;
-    --track: #eef0f4;
-    --surface: #fbfbfc;
-    --accent: #3b3fd8;
-    --accent-soft: #ededfd;
+    --ink: #0f1729;
+    --ink-2: #313c55;
+    --muted: #5b6783;
+    --faint: #8c97ad;
+    --rule: #d6ddee;
+    --rule-2: #b3c1e0;
+    --accent: #2554ff;
+    --wash: #f3f6ff;
+    --fine: rgba(37, 84, 255, 0.045);
+    --bold: rgba(37, 84, 255, 0.10);
   }
   * { box-sizing: border-box; }
   html { -webkit-text-size-adjust: 100%; }
   body {
     margin: 0;
-    background: #fff;
-    color: var(--ink);
-    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
-    -webkit-font-smoothing: antialiased;
+    color: var(--ink-2);
+    font: 15px/1.75 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+      "Microsoft YaHei", "Segoe UI", sans-serif;
+    font-feature-settings: "tnum" 1;
+    background-color: #fff;
+    background-image:
+      linear-gradient(to right, var(--fine) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--fine) 1px, transparent 1px),
+      linear-gradient(to right, var(--bold) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--bold) 1px, transparent 1px);
+    background-size: 8px 8px, 8px 8px, 40px 40px, 40px 40px;
   }
-  body::before {
+
+  /* ---- sheet and frame --------------------------------------------------- */
+  .sheet { max-width: 1200px; margin: 0 auto; padding: 26px 24px 40px; }
+  .frame {
+    position: relative;
+    border: 1px solid var(--rule-2);
+    background: rgba(255, 255, 255, 0.93);
+  }
+  .frame::before {
     content: "";
-    position: fixed;
-    inset: 0 0 auto 0;
-    height: 3px;
-    background: var(--accent);
+    position: absolute;
+    inset: -5px;
+    border: 1px solid var(--rule);
+    pointer-events: none;
   }
-  .page { max-width: 880px; margin: 0 auto; padding: 44px 24px 56px; }
-  h1, h2, h3 { margin: 0; font-weight: 600; }
-  .figure, time { font-variant-numeric: tabular-nums; }
-
-  header {
+  .plate {
     display: flex;
-    flex-wrap: wrap;
-    align-items: flex-end;
+    align-items: center;
     justify-content: space-between;
-    gap: 20px 32px;
-    padding-bottom: 22px;
-    border-bottom: 1px solid var(--line);
+    gap: 14px;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--rule-2);
   }
-  .title { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
-  h1 { font-size: 21px; letter-spacing: -0.015em; }
-  .group { font-size: 13px; color: var(--muted); }
-  .group b { font-weight: 600; color: var(--ink); }
-  .badge {
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    padding: 3px 9px;
-    border-radius: 999px;
-    background: var(--accent-soft);
-    color: var(--accent);
+  .mark {
+    font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.18em;
+    color: var(--ink);
   }
-  .badge[data-mode="live"] { background: var(--ink); color: #fff; }
-
-  .meta { display: flex; gap: 28px; margin: 0; }
-  .meta div { display: flex; flex-direction: column; gap: 2px; }
-  .meta dt { font-size: 11px; letter-spacing: 0.08em; color: var(--faint); }
-  .meta dd { margin: 0; font-size: 14px; font-variant-numeric: tabular-nums; }
-  .logout { align-self: center; }
+  .mark span {
+    margin-left: 12px;
+    padding-left: 12px;
+    border-left: 1px solid var(--rule-2);
+    font-weight: 400;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+  }
+  .plate-end { display: flex; align-items: center; gap: 16px; }
+  .stamp {
+    font: 500 10.5px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .stamp b { color: var(--accent); font-weight: 600; }
+  .logout { display: flex; }
   .logout button {
-    padding: 4px 8px;
-    border: 1px solid var(--line-strong);
-    border-radius: 4px;
+    padding: 3px 8px;
+    border: 1px solid var(--rule-2);
     background: transparent;
     color: var(--muted);
-    font: inherit;
-    font-size: 12px;
+    font: 500 10.5px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.12em;
     cursor: pointer;
   }
-  .logout button:hover { color: var(--accent); }
+  .logout button:hover, .logout button:focus-visible { color: var(--accent); border-color: var(--accent); }
+  .logout button:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
-  .alert {
+  .body-grid { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 240px; }
+  .body-grid::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 240px;
+    border-left: 1px solid var(--rule-2);
+    pointer-events: none;
+  }
+  main { min-width: 0; padding: 30px 40px 70px 26px; }
+
+  /* ---- right margin: index and title block ------------------------------- */
+  .margin {
     display: flex;
-    flex-wrap: wrap;
-    gap: 4px 10px;
-    align-items: baseline;
-    margin-top: 20px;
-    padding: 10px 14px;
-    border-left: 3px solid var(--accent);
-    background: var(--accent-soft);
-    font-size: 13px;
+    flex-direction: column;
+    gap: 20px;
+    height: calc(100vh - 48px);
+    padding: 16px 14px 18px;
+    position: sticky;
+    top: 24px;
+    overflow-y: auto;
+  }
+  .k {
+    margin: 0 0 8px;
+    font: 600 9.5px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.2em;
+    color: var(--faint);
+    text-transform: uppercase;
+  }
+  .toc ul { list-style: none; margin: 0; padding: 0; counter-reset: mark; }
+  .toc li { counter-increment: mark; }
+  .toc a {
+    display: flex;
+    gap: 8px;
+    padding: 3px 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+    text-decoration: none;
+  }
+  .toc a::before {
+    content: counter(mark, decimal-leading-zero);
+    flex: none;
+    font: 500 9.5px/1.9 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.06em;
+    color: var(--faint);
+  }
+  .toc a:hover { color: var(--accent); }
+
+  .titleblock { margin-top: auto; border: 1px solid var(--rule-2); }
+  .titleblock .k { margin: 0; padding: 5px 8px; background: var(--wash); border-bottom: 1px solid var(--rule-2); }
+  .tb-row { display: grid; grid-template-columns: 58px minmax(0, 1fr); border-bottom: 1px solid var(--rule); }
+  .tb-row:last-child { border-bottom: 0; }
+  .tb-k {
+    padding: 5px 6px;
+    border-right: 1px solid var(--rule);
+    font: 500 9.5px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.08em;
+    color: var(--faint);
+  }
+  .tb-v { padding: 5px 8px; font-size: 11.5px; line-height: 1.7; color: var(--ink); overflow-wrap: anywhere; }
+  .tb-sub { display: block; font: 400 9.5px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.04em; color: var(--faint); }
+
+  /* ---- drawing text ------------------------------------------------------ */
+  .doc { max-width: 780px; counter-reset: sec; }
+  .doc h1 {
+    margin: 0 0 26px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--rule-2);
+    font-size: 29px;
+    line-height: 1.28;
+    font-weight: 700;
+    letter-spacing: -0.02em;
     color: var(--ink);
   }
-  .alert span { color: var(--muted); overflow-wrap: anywhere; }
-  .alert[hidden] { display: none; }
-
-  section { margin-top: 40px; }
-  .section-head {
+  .doc h2 {
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
+    align-items: center;
     gap: 12px;
-    margin-bottom: 14px;
+    margin: 44px 0 14px;
+    padding-top: 16px;
+    border-top: 1px solid var(--rule);
+    font-size: 19px;
+    line-height: 1.35;
+    font-weight: 650;
+    letter-spacing: -0.008em;
+    color: var(--ink);
+    scroll-margin-top: 16px;
   }
-  h2 { font-size: 13px; letter-spacing: 0.14em; color: var(--muted); font-weight: 600; }
-  .count { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .doc h2::before {
+    counter-increment: sec;
+    content: counter(sec, decimal-leading-zero);
+    flex: none;
+    padding: 2px 5px 1px;
+    border: 1px solid var(--accent);
+    font: 600 10px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+  .doc h2 .t { flex: 0 1 auto; min-width: 0; }
+  .doc h2 .dim { position: relative; flex: 1; min-width: 18px; height: 9px; }
+  .doc h2 .dim::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 4px;
+    height: 1px;
+    background: var(--rule-2);
+  }
+  .doc h2 .dim::after {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 9px;
+    border-left: 1px solid var(--rule-2);
+    border-right: 1px solid var(--rule-2);
+  }
+  .h2-note {
+    flex: none;
+    font: 500 10px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.08em;
+    color: var(--faint);
+  }
 
-  .accounts { border-top: 1px solid var(--line); }
-  .account { padding: 18px 0 16px; border-bottom: 1px solid var(--line); }
-  .account[data-closed="true"] .head h3 { color: var(--muted); }
-  .head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; }
-  .head h3 { font-size: 15px; overflow-wrap: anywhere; }
-  .account-id { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
-  .state {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: auto;
-    font-size: 12px;
+  /* ---- note -------------------------------------------------------------- */
+  .note {
+    margin: 0 0 8px;
+    padding: 11px 14px 9px;
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    background: #fbfcff;
+  }
+  .note-k {
+    margin: 0 0 4px;
+    font: 600 9.5px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.2em;
     color: var(--muted);
+    text-transform: uppercase;
   }
-  .state i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
-  .state[data-kind="cooldown"] { color: var(--accent); }
-  .state[data-kind="cooldown"] i { background: var(--accent); }
-  .state[data-kind="unusable"] i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--faint); }
-  .state[data-kind="closed"] i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--line-strong); }
-  .state[data-kind="closed"] { color: var(--faint); }
+  .note-body { margin: 0; font-size: 13px; line-height: 1.7; color: var(--ink); overflow-wrap: anywhere; }
+  .note-body b { font: 600 11px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.06em; }
+  .note-body span { margin-left: 8px; color: var(--muted); }
+  .note[hidden] { display: none; }
 
-  .facts {
-    display: grid;
-    grid-template-columns: 92px minmax(200px, 1fr) 104px 104px;
-    align-items: center;
-    gap: 8px 24px;
-    margin-top: 8px;
+  /* ---- drawing tables ---------------------------------------------------- */
+  .table {
+    width: 100%;
+    border-collapse: collapse;
+    border-top: 1.5px solid var(--accent);
+    font-size: 13px;
+    line-height: 1.6;
   }
-  .fact { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .label { font-size: 11px; color: var(--faint); letter-spacing: 0.04em; white-space: nowrap; }
-  .value { display: flex; align-items: center; gap: 8px; font-size: 13px; white-space: nowrap; }
-  .value .figure { font-weight: 600; }
-  .value .figure.over { color: var(--accent); }
-  .quiet { color: var(--muted); font-size: 13px; }
+  .table th {
+    padding: 7px 10px 6px;
+    border-bottom: 1px solid var(--rule-2);
+    background: var(--wash);
+    text-align: left;
+    vertical-align: bottom;
+    font: 600 10.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .table th.th-num { text-align: right; }
+  .th-sub { display: block; font-weight: 400; font-size: 9.5px; letter-spacing: 0.08em; color: var(--faint); }
+  .table td { padding: 9px 10px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+  .table tbody tr:last-child td { border-bottom: 1px solid var(--rule-2); }
+  .table .empty { padding: 14px 10px; color: var(--faint); }
+  .table tr[data-attention="true"] .c-event { color: var(--accent); }
 
+  .account-name { color: var(--ink); font-size: 13.5px; overflow-wrap: anywhere; }
+  .account-id {
+    margin-left: 6px;
+    font: 500 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.04em;
+    color: var(--faint);
+    white-space: nowrap;
+  }
+  .figure { font-weight: 600; color: var(--ink); }
+  .figure.over { color: var(--accent); }
+
+  .capacity { display: flex; align-items: center; gap: 9px; white-space: nowrap; }
   .blocks { display: inline-flex; gap: 3px; }
-  .block { width: 8px; height: 14px; border-radius: 2px; box-shadow: inset 0 0 0 1.5px var(--line-strong); }
-  .block.on { background: var(--ink); box-shadow: none; }
+  .block { width: 7px; height: 13px; border: 1px solid var(--rule-2); }
+  .block.on { background: var(--ink); border-color: var(--ink); }
+  .of { color: var(--muted); font-size: 12px; }
 
-  .track { position: relative; flex: 1; min-width: 90px; height: 6px; border-radius: 3px; background: var(--track); }
-  .track i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--faint); }
-  .track.over i { background: var(--accent); }
-  .track b { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--line-strong); }
+  .state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .state i { flex: none; width: 6px; height: 6px; border: 1px solid var(--rule-2); background: var(--faint); }
+  .state[data-kind="ok"] { color: var(--ink-2); }
+  .state[data-kind="ok"] i { background: var(--ink); border-color: var(--ink); }
+  .state[data-kind="cooldown"] { color: var(--accent); }
+  .state[data-kind="cooldown"] i { background: var(--accent); border-color: var(--accent); }
+  .state[data-kind="unusable"] i { background: transparent; }
+  .state[data-kind="closed"] { color: var(--faint); }
+  .state[data-kind="closed"] i { background: transparent; border-color: var(--faint); }
 
-  .timeline { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
-  .timeline li {
-    display: grid;
-    grid-template-columns: 62px 62px minmax(0, 1fr) auto 62px;
-    grid-template-areas: "time tag who change why";
-    align-items: baseline;
-    gap: 4px 12px;
-    padding: 11px 0;
-    border-bottom: 1px solid var(--line);
-    font-size: 14px;
+  .rate { display: flex; align-items: center; gap: 9px; white-space: nowrap; }
+  .rate .figure { min-width: 42px; }
+  .meter {
+    position: relative;
+    flex: 1;
+    min-width: 60px;
+    height: 6px;
+    border: 1px solid var(--rule-2);
+    background: var(--wash);
   }
-  .timeline time { grid-area: time; color: var(--faint); font-size: 12px; }
-  .tag { grid-area: tag; font-size: 12px; color: var(--muted); }
-  .timeline li[data-attention="true"] .tag { color: var(--accent); }
-  .who { grid-area: who; color: var(--ink); overflow-wrap: anywhere; }
-  .change { grid-area: change; font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
-  .change b { color: var(--faint); font-weight: 400; margin: 0 3px; }
-  .why { grid-area: why; text-align: right; font-variant-numeric: tabular-nums; color: var(--faint); font-size: 12px; white-space: nowrap; }
-  .empty { padding: 16px 0; border-bottom: 1px solid var(--line); color: var(--faint); font-size: 14px; }
+  .meter i { position: absolute; inset: 0 auto 0 0; background: var(--ink-2); }
+  .meter.over { border-color: var(--accent); }
+  .meter.over i { background: var(--accent); }
+  .meter b { position: absolute; top: -3px; bottom: -3px; width: 1px; margin-left: -0.5px; background: var(--ink-2); }
 
-  footer { margin-top: 36px; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .tally { white-space: nowrap; }
+  .quiet { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
-  @media (max-width: 699px) {
-    .page { padding: 34px 18px 48px; }
-    .meta { gap: 22px; }
-    .facts { grid-template-columns: 1fr 1fr; gap: 12px 16px; }
-    .fact-rate { grid-column: 1 / -1; }
-    .timeline li {
-      grid-template-columns: 56px auto 1fr;
-      grid-template-areas:
-        "time tag change"
-        "who who why";
-      padding: 12px 0;
+  .c-time time { font: 500 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.04em; color: var(--faint); }
+  .c-event { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+  .c-change { white-space: nowrap; font-size: 12.5px; }
+  .c-change .arrow { margin: 0 4px; color: var(--faint); }
+  .decisions .account-id { margin-left: 0; margin-right: 6px; }
+  .decisions .c-rate { text-align: right; font: 500 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--faint); white-space: nowrap; }
+
+  .is-closed .account-name,
+  .is-closed .figure,
+  .is-closed .figure.over { color: var(--faint); }
+  .is-closed .block.on { background: var(--faint); border-color: var(--faint); }
+  .is-closed .meter { border-color: var(--rule-2); }
+  .is-closed .meter i { background: var(--faint); }
+
+  @media (max-width: 1199px) {
+    .body-grid { grid-template-columns: minmax(0, 1fr) 210px; }
+    .body-grid::after { right: 210px; }
+    main { padding-right: 28px; }
+    .margin { height: auto; max-height: none; }
+    .titleblock { margin-top: 0; }
+  }
+  @media (max-width: 880px) {
+    .sheet { padding: 12px 16px 28px; }
+    .frame::before { inset: -3px; }
+    .plate { flex-wrap: wrap; gap: 6px 12px; padding: 10px 12px; }
+    .body-grid { display: flex; flex-direction: column; }
+    .body-grid::after { display: none; }
+    main { order: 1; padding: 18px 14px 40px; }
+    .margin {
+      order: 2;
+      position: static;
+      height: auto;
+      max-height: none;
+      gap: 14px;
+      padding: 14px 12px 16px;
+      border-top: 1px solid var(--rule-2);
     }
-    .why { text-align: right; }
+    .toc ul { display: flex; gap: 14px; }
+    .doc h1 { font-size: 24px; }
+    .doc h2 { font-size: 17px; margin-top: 34px; }
+  }
+  @media (max-width: 760px) {
+    .doc { max-width: none; }
+    .table, .table tbody, .table tr, .table td { display: block; }
+    .table thead { display: none; }
+    .table tr { padding: 12px 0 11px; border-bottom: 1px solid var(--rule); }
+    .table tbody tr:last-child { border-bottom: 1px solid var(--rule-2); }
+    .table td { border: 0; padding: 0; }
+    .table td[data-label]::before {
+      content: attr(data-label);
+      display: block;
+      margin-bottom: 1px;
+      font: 600 9.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      letter-spacing: 0.14em;
+      color: var(--faint);
+    }
+    .accounts tr {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas:
+        "account state"
+        "capacity errors"
+        "rate rate"
+        "changed changed";
+      align-items: baseline;
+      gap: 8px 12px;
+    }
+    .c-account { grid-area: account; }
+    .c-state { grid-area: state; justify-self: end; }
+    .c-capacity { grid-area: capacity; }
+    .c-errors { grid-area: errors; justify-self: end; }
+    .c-rate { grid-area: rate; }
+    .c-changed { grid-area: changed; }
+    .decisions tr {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      grid-template-areas:
+        "time event"
+        "account account"
+        "change rate";
+      align-items: baseline;
+      gap: 3px 10px;
+    }
+    .c-time { grid-area: time; }
+    .c-event { grid-area: event; }
+    .decisions .c-account { grid-area: account; }
+    .decisions .c-change { grid-area: change; }
+    .decisions .c-rate { grid-area: rate; justify-self: end; }
+    .decisions td[data-label]::before { display: inline; margin: 0 6px 0 0; }
+    .table tr.empty { display: block; }
   }
 </style>
 </head>
 <body>
-<div class="page">
-  <header>
-    <div class="title">
-      <h1>sub2api-guard</h1>
-      <span class="group">第 <b id="group">—</b> 组</span>
-      <span class="badge" id="mode">—</span>
+<div class="sheet">
+<div class="frame">
+  <header class="plate">
+    <span class="mark">SUB2API-GUARD<span>第 <b id="group">—</b> 组</span></span>
+    <div class="plate-end">
+      <span class="stamp"><b id="mode">—</b></span>
+      <form method="post" action="/logout" class="logout">
+        <button type="submit">退出</button>
+      </form>
     </div>
-    <dl class="meta">
-      <div><dt>上次检查</dt><dd id="last-tick">—</dd></div>
-      <div><dt>错误率阈值</dt><dd id="threshold">—</dd></div>
-    </dl>
-    <form method="post" action="/logout" class="logout">
-      <button type="submit">退出</button>
-    </form>
   </header>
+  <div class="body-grid">
+    <main>
+      <article class="doc">
+        <h1>账号容量</h1>
+        <div class="note" id="alert" hidden>
+          <p class="note-k">检查异常</p>
+          <p class="note-body" id="alert-body"></p>
+        </div>
 
-  <div class="alert" id="alert" hidden></div>
+        <h2 id="accounts"><span class="t">账号</span><i class="dim" aria-hidden="true"></i><span class="h2-note" id="account-count"></span></h2>
+        <table class="table accounts">
+          <thead>
+            <tr>
+              <th>账号</th>
+              <th>容量</th>
+              <th>状态</th>
+              <th>错误率<span class="th-sub" id="rate-window"></span></th>
+              <th>错误 / 总数</th>
+              <th>上次调整</th>
+            </tr>
+          </thead>
+          <tbody id="accounts-body"></tbody>
+        </table>
 
-  <section>
-    <div class="section-head"><h2>账号</h2><span class="count" id="account-count"></span></div>
-    <div class="accounts" id="accounts"></div>
-  </section>
-
-  <section>
-    <div class="section-head"><h2>决策</h2><span class="count" id="decision-count"></span></div>
-    <ol class="timeline" id="decisions"></ol>
-  </section>
-
-  <footer id="updated">正在加载…</footer>
+        <h2 id="decisions"><span class="t">决策</span><i class="dim" aria-hidden="true"></i><span class="h2-note" id="decision-count"></span></h2>
+        <table class="table decisions">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>事件</th>
+              <th>账号</th>
+              <th>容量</th>
+              <th class="th-num">错误率</th>
+            </tr>
+          </thead>
+          <tbody id="decisions-body"></tbody>
+        </table>
+      </article>
+    </main>
+    <aside class="margin">
+      <nav class="toc" aria-label="图内索引">
+        <p class="k">图内索引</p>
+        <ul>
+          <li><a href="#accounts">账号</a></li>
+          <li><a href="#decisions">决策</a></li>
+        </ul>
+      </nav>
+      <div class="titleblock">
+        <p class="k">标题栏</p>
+        <div class="tb-row"><span class="tb-k">分组</span><span class="tb-v">第 <span id="tb-group">—</span> 组</span></div>
+        <div class="tb-row"><span class="tb-k">模式</span><span class="tb-v" id="tb-mode">—</span></div>
+        <div class="tb-row"><span class="tb-k">上次检查</span><span class="tb-v" id="last-tick">—</span></div>
+        <div class="tb-row"><span class="tb-k">阈值</span><span class="tb-v"><span id="threshold">—</span><span class="tb-sub" id="threshold-sub"></span></span></div>
+        <div class="tb-row"><span class="tb-k">保底</span><span class="tb-v" id="floor">—</span></div>
+        <div class="tb-row"><span class="tb-k">更新</span><span class="tb-v" id="updated">正在加载…</span></div>
+      </div>
+    </aside>
+  </div>
+</div>
 </div>
 <script>
   const clockFormat = new Intl.DateTimeFormat("zh-CN", {
@@ -235,15 +491,21 @@
 
   const nodes = {
     group: document.querySelector("#group"),
+    tbGroup: document.querySelector("#tb-group"),
     mode: document.querySelector("#mode"),
+    tbMode: document.querySelector("#tb-mode"),
     lastTick: document.querySelector("#last-tick"),
     threshold: document.querySelector("#threshold"),
-    alert: document.querySelector("#alert"),
-    accounts: document.querySelector("#accounts"),
-    accountCount: document.querySelector("#account-count"),
-    decisions: document.querySelector("#decisions"),
-    decisionCount: document.querySelector("#decision-count"),
+    thresholdSub: document.querySelector("#threshold-sub"),
+    floor: document.querySelector("#floor"),
     updated: document.querySelector("#updated"),
+    alert: document.querySelector("#alert"),
+    alertBody: document.querySelector("#alert-body"),
+    accounts: document.querySelector("#accounts-body"),
+    accountCount: document.querySelector("#account-count"),
+    decisions: document.querySelector("#decisions-body"),
+    decisionCount: document.querySelector("#decision-count"),
+    rateWindow: document.querySelector("#rate-window"),
   };
 
   function h(tag, className, ...children) {
@@ -254,6 +516,18 @@
       node.append(child instanceof Node ? child : String(child));
     }
     return node;
+  }
+
+  function cell(className, label, ...children) {
+    const node = h("td", className, ...children);
+    if (label) node.dataset.label = label;
+    return node;
+  }
+
+  function emptyRow(message, columns) {
+    const node = h("td", "empty", message);
+    node.colSpan = columns;
+    return h("tr", "empty", node);
   }
 
   const formatClock = (value) => clockFormat.format(new Date(value));
@@ -281,7 +555,7 @@
     // The track covers three times the policy threshold, so small rates stay readable.
     const scale = Math.max(policy.errorRate * 3, 0.03);
     const over = recent.rate >= policy.errorRate;
-    const track = h("span", over ? "track over" : "track", h("i"), h("b"));
+    const track = h("span", over ? "meter over" : "meter", h("i"), h("b"));
     track.querySelector("i").style.width = `${Math.min(recent.rate / scale, 1) * 100}%`;
     track.querySelector("b").style.left = `${Math.min(policy.errorRate / scale, 1) * 100}%`;
     return track;
@@ -300,63 +574,67 @@
     const state = accountState(account, policy, now);
     const stateNode = h("span", "state", h("i"), state.label);
     stateNode.dataset.kind = state.kind;
-    const head = h("div", "head", h("h3", null, account.name), h("span", "account-id", `#${account.id}`), stateNode);
 
-    const over = account.recent.rate >= policy.errorRate;
-    const facts = h("div", "facts",
-      h("div", "fact",
-        h("span", "label", "容量"),
-        h("span", "value", capacityBlocks(account), h("span", "figure", `${account.concurrency} / ${account.maxConcurrency}`)),
+    return h("tr", account.closed ? "is-closed" : null,
+      cell("c-account", null,
+        h("span", "account-name", account.name),
+        h("span", "account-id", `#${account.id}`),
       ),
-      h("div", "fact fact-rate",
-        h("span", "label", `近 ${policy.windowMinutes} 分钟错误率`),
-        h("span", "value",
-          h("span", over ? "figure over" : "figure", formatRate(account.recent.rate)),
+      cell("c-capacity", "容量",
+        h("span", "capacity",
+          capacityBlocks(account),
+          h("span", "of", h("b", "figure", account.concurrency), ` / ${account.maxConcurrency}`),
+        ),
+      ),
+      cell("c-state", null, stateNode),
+      cell("c-rate", "错误率",
+        h("span", "rate",
+          h("b", account.recent.rate >= policy.errorRate ? "figure over" : "figure", formatRate(account.recent.rate)),
           rateBar(account.recent, policy),
         ),
       ),
-      h("div", "fact",
-        h("span", "label", "错误 / 总数"),
-        h("span", "value", h("span", "figure", `${account.recent.errors} / ${account.recent.total}`)),
+      cell("c-errors", "错误 / 总数",
+        h("span", "tally", h("b", "figure", account.recent.errors), ` / ${account.recent.total}`),
       ),
-      h("div", "fact",
-        h("span", "label", "上次调整"),
-        h("span", "value", h("span", "quiet", relativeTime(account.lastChangeAt, now))),
-      ),
+      cell("c-changed", "上次调整", h("span", "quiet", relativeTime(account.lastChangeAt, now))),
     );
-
-    const article = h("article", "account", head, facts);
-    article.dataset.closed = String(account.closed);
-    return article;
   }
 
   function renderDecision(record) {
     const after = record.event === "close"
       ? "关闭"
       : record.event === "floor_blocked" ? "保留" : String(record.nextConcurrency);
-    const item = h("li", null,
-      h("time", null, formatClock(record.ts)),
-      h("span", "tag", eventLabels[record.event] ?? record.event),
-      h("span", "who", `#${record.id} ${record.name}`),
-      h("span", "change", record.concurrency, h("b", null, "→"), after),
-      h("span", "why", formatRate(record.rate)),
+    const row = h("tr", null,
+      cell("c-time", null, h("time", null, formatClock(record.ts))),
+      cell("c-event", null, eventLabels[record.event] ?? record.event),
+      cell("c-account", null, h("span", "account-id", `#${record.id}`), h("span", "account-name", record.name)),
+      cell("c-change", "容量",
+        h("b", "figure", record.concurrency),
+        h("span", "arrow", "→"),
+        after,
+      ),
+      cell("c-rate", "错误率", formatRate(record.rate)),
     );
-    item.dataset.attention = String(attentionEvents.has(record.event));
-    return item;
+    row.dataset.attention = String(attentionEvents.has(record.event));
+    return row;
   }
 
   function render(data) {
     const now = Date.parse(data.now);
     nodes.group.textContent = data.groupId;
-    nodes.mode.textContent = data.dryRun ? "演练模式" : "实跑";
-    nodes.mode.dataset.mode = data.dryRun ? "dry" : "live";
+    nodes.tbGroup.textContent = data.groupId;
+    nodes.mode.textContent = data.dryRun ? "演练" : "实跑";
+    nodes.tbMode.textContent = data.dryRun ? "演练" : "实跑";
     nodes.lastTick.textContent = data.lastTickAt ? formatClock(data.lastTickAt) : "尚未完成";
     nodes.lastTick.title = data.lastTickAt ?? "";
     nodes.threshold.textContent = formatRate(data.policy.errorRate);
+    nodes.thresholdSub.textContent = `≥ ${data.policy.minRequests} 次 / ${data.policy.windowMinutes} 分钟`;
+    nodes.floor.textContent = `≥ ${data.policy.minSchedulable} 个可调度`;
+    nodes.rateWindow.textContent = `近 ${data.policy.windowMinutes} 分钟`;
 
     if (data.lastError) {
       nodes.alert.hidden = false;
-      nodes.alert.replaceChildren(
+      nodes.alertBody.replaceChildren(
         h("b", null, `${formatClock(data.lastError.ts)} 检查失败`),
         h("span", null, data.lastError.message),
       );
@@ -365,11 +643,11 @@
     }
 
     const accounts = data.accounts.map((account) => renderAccount(account, data.policy, now));
-    nodes.accounts.replaceChildren(...(accounts.length ? accounts : [h("p", "empty", "暂无账号数据")]));
+    nodes.accounts.replaceChildren(...(accounts.length ? accounts : [emptyRow("暂无账号数据", 6)]));
     nodes.accountCount.textContent = `${data.accounts.length} 个`;
 
     const decisions = data.decisions.map(renderDecision);
-    nodes.decisions.replaceChildren(...(decisions.length ? decisions : [h("li", "empty", "暂无决策")]));
+    nodes.decisions.replaceChildren(...(decisions.length ? decisions : [emptyRow("暂无决策", 5)]));
     nodes.decisionCount.textContent = `最近 ${data.decisions.length} 条`;
   }
 
