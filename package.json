@@ -1,0 +1,8 @@
+{
+  "name": "sub2api-guard",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,13 @@
+services:
+  sub2api-guard:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+    networks:
+      - sub2api-deploy_sub2api-network
+
+networks:
+  sub2api-deploy_sub2api-network:
+    external: true
