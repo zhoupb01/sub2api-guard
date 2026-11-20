@@ -27,7 +27,7 @@ export function openAdminApi(baseUrl: string, apiKey: string) {
   }
 
   async function updateAccount(id: number, changes:
-    | { concurrency: number }
+    | { concurrency: number; priority?: number }
     | { priority: number }
     | { load_factor: number }
     | { group_ids: number[] },

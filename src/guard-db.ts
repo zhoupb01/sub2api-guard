@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { defaultSettings, type Settings } from "./settings";
 import type { DecisionRecord } from "./web/store";
 
 type DecisionRow = Pick<DecisionRecord, "ts" | "event" | "id" | "name" | "concurrency" | "lastChangeAt"> & {
@@ -9,9 +10,15 @@ export interface AccountState {
   lastChangeAt: string | undefined;
   closedAt: string | undefined;
   lastFloorPushAt: string | undefined;
+  priorityBump: number;
 }
 
-type StateRow = { [Field in keyof AccountState]: string | null };
+type StateRow = { [Field in keyof AccountState]: Exclude<AccountState[Field], undefined> | null } & { priorityBump: number };
+
+export interface SavedSettings {
+  value: Settings;
+  updatedAt: string | null;
+}
 
 export interface GuardDb {
   state: {
@@ -21,6 +28,11 @@ export interface GuardDb {
   decisions: {
     append(record: DecisionRecord): void;
     recent(limit: number): DecisionRecord[];
+    since(from: string): DecisionRecord[];
+  };
+  settings: {
+    get(): SavedSettings;
+    save(value: Settings, updatedAt: string): void;
   };
   close(): void;
 }
@@ -35,6 +47,7 @@ export function openGuardDb(path: string, dryRun: boolean): GuardDb {
       last_change_at TEXT,
       closed_at TEXT,
       last_floor_push_at TEXT,
+      priority_bump INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (dry_run, account_id)
     );
     CREATE TABLE IF NOT EXISTS decisions (
@@ -49,27 +62,54 @@ export function openGuardDb(path: string, dryRun: boolean): GuardDb {
       details TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS decisions_by_mode ON decisions (dry_run, id);
+    CREATE INDEX IF NOT EXISTS decisions_by_mode_time ON decisions (dry_run, ts, id);
+    CREATE TABLE IF NOT EXISTS settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
+  if (!database.query<{ name: string }, []>("PRAGMA table_info(account_state)").all().some(({ name }) => name === "priority_bump")) {
+    database.run("ALTER TABLE account_state ADD COLUMN priority_bump INTEGER NOT NULL DEFAULT 0");
+  }
 
   const getState = database.query<StateRow, [boolean, number]>(`
-    SELECT last_change_at AS lastChangeAt, closed_at AS closedAt, last_floor_push_at AS lastFloorPushAt
+    SELECT last_change_at AS lastChangeAt, closed_at AS closedAt,
+           last_floor_push_at AS lastFloorPushAt, priority_bump AS priorityBump
     FROM account_state WHERE dry_run = ? AND account_id = ?
   `);
   const setState = database.query(`
-    INSERT INTO account_state (dry_run, account_id, last_change_at, closed_at, last_floor_push_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO account_state (dry_run, account_id, last_change_at, closed_at, last_floor_push_at, priority_bump)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT (dry_run, account_id) DO UPDATE SET
       last_change_at = CASE WHEN ? THEN excluded.last_change_at ELSE account_state.last_change_at END,
       closed_at = CASE WHEN ? THEN excluded.closed_at ELSE account_state.closed_at END,
-      last_floor_push_at = CASE WHEN ? THEN excluded.last_floor_push_at ELSE account_state.last_floor_push_at END
+      last_floor_push_at = CASE WHEN ? THEN excluded.last_floor_push_at ELSE account_state.last_floor_push_at END,
+      priority_bump = CASE WHEN ? THEN excluded.priority_bump ELSE account_state.priority_bump END
   `);
   const insertDecision = database.query(`
     INSERT INTO decisions (ts, dry_run, event, account_id, account_name, concurrency, last_change_at, details)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const recentDecisions = database.query<DecisionRow, [boolean, number]>(`
+  const selectDecisions = `
     SELECT ts, event, account_id AS id, account_name AS name, concurrency, last_change_at AS lastChangeAt, details
-    FROM decisions WHERE dry_run = ? ORDER BY decisions.id DESC LIMIT ?
+    FROM decisions WHERE dry_run = ?
+  `;
+  const recentDecisions = database.query<DecisionRow, [boolean, number]>(
+    selectDecisions + " ORDER BY decisions.id DESC LIMIT ?",
+  );
+  const decisionsSince = database.query<DecisionRow, [boolean, string]>(
+    selectDecisions + " AND ts >= ? ORDER BY ts, decisions.id",
+  );
+  const unpackDecision = ({ details, ...record }: DecisionRow): DecisionRecord => ({
+    ...JSON.parse(details), ...record, dryRun,
+  });
+  const getSettings = database.query<{ value: string; updatedAt: string }, []>(
+    "SELECT value, updated_at AS updatedAt FROM settings WHERE id = 1",
+  );
+  const saveSettings = database.query(`
+    INSERT INTO settings (id, value, updated_at) VALUES (1, ?, ?)
+    ON CONFLICT (id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `);
 
   return {
@@ -81,12 +121,14 @@ export function openGuardDb(path: string, dryRun: boolean): GuardDb {
           lastChangeAt: row.lastChangeAt ?? undefined,
           closedAt: row.closedAt ?? undefined,
           lastFloorPushAt: row.lastFloorPushAt ?? undefined,
+          priorityBump: row.priorityBump,
         };
       },
       set(id, update) {
         setState.run(
           dryRun, id, update.lastChangeAt ?? null, update.closedAt ?? null, update.lastFloorPushAt ?? null,
-          "lastChangeAt" in update, "closedAt" in update, "lastFloorPushAt" in update,
+          update.priorityBump ?? 0,
+          "lastChangeAt" in update, "closedAt" in update, "lastFloorPushAt" in update, update.priorityBump !== undefined,
         );
       },
     },
@@ -96,9 +138,19 @@ export function openGuardDb(path: string, dryRun: boolean): GuardDb {
         insertDecision.run(ts, dryRun, event, id, name, concurrency, lastChangeAt, JSON.stringify(details));
       },
       recent(limit) {
-        return recentDecisions.all(dryRun, limit).map(({ details, ...record }) => ({
-          ...JSON.parse(details), ...record, dryRun,
-        }));
+        return recentDecisions.all(dryRun, limit).map(unpackDecision);
+      },
+      since(from) {
+        return decisionsSince.all(dryRun, from).map(unpackDecision);
+      },
+    },
+    settings: {
+      get() {
+        const row = getSettings.get();
+        return row ? { value: JSON.parse(row.value), updatedAt: row.updatedAt } : { value: defaultSettings, updatedAt: null };
+      },
+      save(value, updatedAt) {
+        saveSettings.run(JSON.stringify(value), updatedAt);
       },
     },
     close: () => database.close(),

@@ -1,5 +1,9 @@
 import { afterEach, expect, mock, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import { runProbe } from "../src/probe";
+import { createProbeRunner, type ProbeRun } from "../src/web/probe-runner";
+import { startStatusServer } from "../src/web/server";
+import { createStatusStore, type StatusSnapshot } from "../src/web/store";
 
 const options = {
   baseUrl: "https://sub2api.test",
@@ -10,13 +14,15 @@ const options = {
   model: "gpt-6.1-sol",
   prompt: "My custom prompt",
   repeat: 1,
+  log: () => {},
 };
 
 const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });
 
-function mockSub2api(respond: (signal?: AbortSignal | null) => Response, {
+function mockSub2api(respond: (signal?: AbortSignal | null) => Response | Promise<Response>, {
   schedulable = true, failRestore = false, groupAccountCount = 1, createGroup = false,
+  beforeRestore = async () => {},
 } = {}) {
   const actions: unknown[] = [];
   const success = (data: unknown) => Response.json({ code: 0, data });
@@ -55,6 +61,7 @@ function mockSub2api(respond: (signal?: AbortSignal | null) => Response, {
         return success({ id: 135, name: "test account", group_ids: [34, 12], schedulable });
       case "POST /api/v1/admin/accounts/bulk-update":
         actions.push(body);
+        if (body.group_ids.includes(34)) await beforeRestore();
         return success({ success_ids: [135] });
       case "GET /api/v1/admin/accounts?group=88&page_size=1&lite=true":
         actions.push("confirm group");
@@ -80,6 +87,27 @@ test("restores scheduling before group bindings after a successful probe", async
   expect(exitCode).toBe(0);
   expect(results.map((result) => result.requestNumber)).toEqual([1, 2]);
   expect(actions).toEqual([move, "confirm group", "request", "request", { schedulable: true }, restore]);
+});
+
+test("emits each request result before account restore", async () => {
+  const actions = mockSub2api(completed);
+  const messages: string[] = [];
+  const updates: unknown[] = [];
+  const { results } = await runProbe({ ...options, repeat: 2,
+    log: (message) => messages.push(message),
+    onResult(result) {
+      expect(actions.at(-1)).toBe("request");
+      updates.push(result);
+    },
+  }, new AbortController().signal);
+  expect(updates).toEqual(results);
+  expect(updates).toHaveLength(2);
+  expect(messages).toEqual([
+    "Account 135 (test account): moving to 账号测试",
+    "Account 135: request 1/2",
+    "Account 135: request 2/2",
+    "Account 135: restoring scheduling and group bindings",
+  ]);
 });
 
 test("restores scheduling before groups after an HTTP error", async () => {
@@ -165,4 +193,187 @@ test.each([
   const result = await runProbe(options, new AbortController().signal);
   expect(result).toMatchObject({ exitCode: 1, results: [{ status: 200, error }] });
   expect(actions).toEqual([move, "confirm group", "request", { schedulable: true }, restore]);
+});
+
+const tickAt = "2026-11-19T12:00:00.000Z";
+const now = () => Date.parse(tickAt);
+const probeRequest = { accountIds: [135], model: options.model, prompt: options.prompt, repeat: 2 };
+
+async function withProbeServer(
+  credentials: Pick<typeof options, "adminApiKey" | "probeApiKey">,
+  check: (api: {
+    get: (path?: string) => Promise<Response>;
+    post: (path: string, value?: unknown) => Promise<Response>;
+    anonymous: (path: string, method: string) => Promise<Response>;
+    raw: (body: string, contentType: string) => Promise<Response>;
+    shutdown: () => Promise<void>;
+  }) => Promise<void>,
+) {
+  const probe = createProbeRunner({ ...credentials, baseUrl: options.baseUrl, groupName: options.groupName, now });
+  const store = createStatusStore({ groupId: 34, dryRun: true, probeEnabled: probe.enabled });
+  store.recordTick({ now: tickAt, accounts: [{
+    id: 135, name: "test account", concurrency: 3, priority: 10, priorityBump: 2, usable: true,
+    recent: { errors: 0, successes: 0 }, healthy: { errors: 0, successes: 0 },
+    loadFactor: null, since: tickAt, closed: false, closedAt: null,
+  }] });
+  const server = startStatusServer(store, 0, "probe-test", {
+    dist: import.meta.dir, probe, now,
+    changeAccount: async () => "disabled",
+    saveSettings: async () => { throw new Error("Unexpected settings write"); },
+    series: async () => { throw new Error("Unexpected series read"); },
+  });
+  try {
+    const login = await realFetch(new URL("/login", server.url), {
+      method: "POST", body: new URLSearchParams({ password: "probe-test" }),
+    });
+    expect(login.status).toBe(204);
+    const cookie = login.headers.get("set-cookie")!.split(";")[0];
+    await check({
+      get: (path = "/api/probe") => realFetch(new URL(path, server.url), { headers: { cookie } }),
+      post: (path, value) => realFetch(new URL(path, server.url), {
+        method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(value),
+      }),
+      anonymous: (path, method) => realFetch(new URL(path, server.url), { method }),
+      raw: (body, contentType) => realFetch(new URL("/api/probe", server.url), {
+        method: "POST", headers: { cookie, "content-type": contentType }, body,
+      }),
+      shutdown: probe.shutdown,
+    });
+  } finally {
+    server.stop(true);
+    await probe.shutdown();
+  }
+}
+
+test("protects the probe endpoints and validates start requests against the latest snapshot", () => withProbeServer(options, async (api) => {
+  for (const [method, path] of [["GET", "/api/probe"], ["POST", "/api/probe"], ["POST", "/api/probe/cancel"]]) {
+    const response = await api.anonymous(path, method);
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "unauthorized" });
+  }
+  const snapshot = await (await api.get("/api/status")).json() as StatusSnapshot;
+  expect(snapshot).toMatchObject({ probeEnabled: true, dryRun: true, accounts: [{ id: 135, priorityBump: 2 }] });
+  const empty = await api.get();
+  expect(empty.status).toBe(200);
+  expect(empty.headers.get("cache-control")).toBe("no-store");
+  expect(await empty.json()).toEqual({ run: null });
+
+  for (const value of [null, [], {}, { ...probeRequest, accountIds: [] }, { ...probeRequest, accountIds: "135" },
+    { ...probeRequest, accountIds: ["135"] }, { ...probeRequest, accountIds: [135, 135] }, { ...probeRequest, accountIds: [135, 146] },
+    { ...probeRequest, accountIds: [135.1] }, { ...probeRequest, model: " " }, { ...probeRequest, prompt: "\n" },
+    { ...probeRequest, repeat: 0 }, { ...probeRequest, repeat: 11 }, { ...probeRequest, repeat: 1.2 }, { ...probeRequest, repeat: "2" }]) {
+    const response = await api.post("/api/probe", value);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "参数不对" });
+  }
+  expect((await api.raw("{", "application/json")).status).toBe(400);
+  expect((await api.raw(JSON.stringify(probeRequest), "text/plain")).status).toBe(400);
+  const cancel = await api.post("/api/probe/cancel");
+  expect(cancel.status).toBe(409);
+  expect(await cancel.json()).toEqual({ error: "没有正在跑的测试" });
+}));
+
+test.each(["adminApiKey", "probeApiKey"] as const)("disables web probes when %s is empty", (key) => withProbeServer({ ...options, [key]: "" }, async (api) => {
+  expect(await (await api.get("/api/status")).json()).toMatchObject({ probeEnabled: false });
+  const response = await api.post("/api/probe", probeRequest);
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({ error: "没有设置 ADMIN_API_KEY 或 PROBE_API_KEY，不能测试" });
+}));
+
+test("shows live progress, rejects an overlapping run, and waits for restoration after cancel", async () => {
+  const secondRequest = Promise.withResolvers<void>();
+  const restoreStarted = Promise.withResolvers<void>();
+  const releaseRestore = Promise.withResolvers<void>();
+  let requests = 0;
+  const actions = mockSub2api((signal) => {
+    if (++requests === 1) return completed();
+    secondRequest.resolve();
+    return new Promise((_, reject) => {
+      signal!.throwIfAborted();
+      signal!.addEventListener("abort", () => reject(signal!.reason), { once: true });
+    });
+  }, {
+    async beforeRestore() {
+      restoreStarted.resolve();
+      await releaseRestore.promise;
+    },
+  });
+  await withProbeServer(options, async (api) => {
+    const read = async () => (await (await api.get()).json() as { run: ProbeRun }).run;
+    try {
+      const started = await api.post("/api/probe", probeRequest);
+      expect(started.status).toBe(202);
+      expect(await started.json()).toEqual({ id: 1 });
+      await secondRequest.promise;
+      const running = await read();
+      expect(running).toMatchObject({ id: 1, request: probeRequest, startedAt: tickAt, finishedAt: null,
+        error: null, exitCode: null, cancelled: false, results: [{ accountId: 135, requestNumber: 1, status: 200 }] });
+      expect(running.logs).toEqual([
+        { ts: tickAt, message: "Account 135 (test account): moving to 账号测试" },
+        { ts: tickAt, message: "Account 135: request 1/2" },
+        { ts: tickAt, message: "Account 135: request 2/2" },
+      ]);
+      const overlap = await api.post("/api/probe", probeRequest);
+      expect(overlap.status).toBe(409);
+      expect(await overlap.json()).toEqual({ error: "已经有测试在跑，等它结束" });
+
+      const cancel = await api.post("/api/probe/cancel");
+      expect(cancel.status).toBe(204);
+      expect(await cancel.text()).toBe("");
+      await restoreStarted.promise;
+      expect(await read()).toMatchObject({ cancelled: true, finishedAt: null, exitCode: null });
+      expect((await api.post("/api/probe", probeRequest)).status).toBe(409);
+
+      let stopped = false;
+      const shutdown = api.shutdown().then(() => { stopped = true; });
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+      releaseRestore.resolve();
+      await shutdown;
+      const finished = await read();
+      expect(finished).toMatchObject({ cancelled: true, finishedAt: tickAt, exitCode: 1, error: null,
+        results: [{ requestNumber: 1 }, { requestNumber: 2, error: expect.any(String) }] });
+      expect(actions).toEqual([move, "confirm group", "request", "request", { schedulable: true }, restore]);
+      expect((await api.post("/api/probe/cancel")).status).toBe(409);
+    } finally {
+      releaseRestore.resolve();
+    }
+  });
+});
+
+test("the CLI prints the same progress, results table, and full output", async () => {
+  const actions = mockSub2api(() => new Response('data: {"type":"response.output_text.delta","delta":"Hello world"}\n\n'));
+  const upstreamFetch = globalThis.fetch;
+  globalThis.fetch = realFetch;
+  const upstream = Bun.serve({ port: 0, async fetch(request) {
+    return upstreamFetch(request.url, {
+      method: request.method, headers: request.headers, signal: request.signal,
+      body: request.body ? await request.text() : undefined,
+    });
+  } });
+  try {
+    const child = Bun.spawn([process.execPath, fileURLToPath(new URL("../src/probe.ts", import.meta.url)),
+      "--model", options.model, "--prompt", options.prompt, "135"], {
+      env: { SUB2API_URL: upstream.url.href, ADMIN_API_KEY: options.adminApiKey, PROBE_API_KEY: options.probeApiKey,
+        PROBE_GROUP_NAME: "", DATABASE_URL: "" },
+      stdout: "pipe", stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe(
+      "Account 135 (test account): moving to 账号测试\n" +
+      "Account 135: request 1/1\n" +
+      "Account 135: restoring scheduling and group bindings\n",
+    );
+    expect(stdout.replace(/\d+\.\d{3}/g, "0.000")).toBe(
+      "Account  Name          Request #  HTTP  First-token s  Total s  Output / error\n" +
+      "135      test account  1          200   0.000          0.000    Hello world\n\n" +
+      "Account 135 (request 1)\nHello world\n",
+    );
+    expect(actions).toEqual([move, "confirm group", "request", { schedulable: true }, restore]);
+  } finally {
+    upstream.stop(true);
+  }
 });

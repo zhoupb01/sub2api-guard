@@ -2,6 +2,8 @@ services:
   sub2api-guard:
     image: ${REGISTRY:-registry.cn-hangzhou.aliyuncs.com/zhoupb}/sub2api-guard:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    # A running probe needs time to put its account back on SIGTERM.
+    stop_grace_period: 30s
     env_file: .env
     labels:
       - 'traefik.enable=true'

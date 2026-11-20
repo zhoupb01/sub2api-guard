@@ -9,6 +9,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     databaseUrl,
     sub2apiUrl: env.SUB2API_URL ?? "http://sub2api:8080",
     adminApiKey,
+    probeApiKey: env.PROBE_API_KEY ?? "",
+    probeGroupName: env.PROBE_GROUP_NAME || "账号测试",
     groupId: Number(env.GROUP_ID ?? 34),
     tickSeconds: Number(env.TICK_SECONDS ?? 60),
     dryRun,
@@ -16,18 +18,5 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     guardDb: env.GUARD_DB ?? "/data/guard.db",
     webPort: Number(env.WEB_PORT ?? 8080),
     webPassword: env.WEB_PASSWORD ?? "",
-    errorPatterns: JSON.parse(env.ERROR_PATTERNS ?? '["overloaded","Concurrency limit exceeded for account"]') as string[],
-    policy: {
-      maxConcurrency: Number(env.MAX_CONCURRENCY ?? 3),
-      maxOverrides: JSON.parse(env.MAX_OVERRIDES ?? "{}") as Record<string, number>,
-      windowMinutes: Number(env.WINDOW_MIN ?? 10),
-      minRequests: Number(env.MIN_REQUESTS ?? 20),
-      errorRate: Number(env.ERROR_RATE ?? 0.05),
-      cooldownMinutes: Number(env.COOLDOWN_MIN ?? 10),
-      healthyMinutes: Number(env.HEALTHY_MIN ?? 30),
-      healthyRate: Number(env.HEALTHY_RATE ?? 0.01),
-      minSchedulable: Number(env.MIN_SCHEDULABLE ?? 4),
-      reopenMinutes: Number(env.REOPEN_MIN ?? 720),
-    },
   };
 }

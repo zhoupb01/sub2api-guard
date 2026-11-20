@@ -13,12 +13,16 @@ const policy = {
   reopenMinutes: 720,
   maxConcurrency: 3,
   maxOverrides: {},
+  priorityStep: 1,
+  errorPatterns: ["overloaded"],
 };
 
 function sample(id: number, overrides: Partial<AccountSample> = {}): AccountSample {
   return {
     id,
     concurrency: 3,
+    priority: 10,
+    priorityBump: 0,
     usable: true,
     recent: { errors: 1, successes: 19 },
     healthy: { errors: 1, successes: 19 },
@@ -27,8 +31,8 @@ function sample(id: number, overrides: Partial<AccountSample> = {}): AccountSamp
 }
 
 test("decreases capacity by one at the request and error-rate thresholds", () => {
-  expect(decide(now, [sample(150)], policy)).toEqual([
-    { accountId: 150, event: "decrease", concurrency: 2 },
+  expect(decide(now, [sample(150, { priorityBump: 2 })], policy)).toEqual([
+    { accountId: 150, event: "decrease", concurrency: 2, priority: 11, priorityBump: 3 },
   ]);
 });
 
@@ -56,6 +60,7 @@ test("closes a bad account at capacity one when four usable accounts remain", ()
 });
 
 const noTraffic = { errors: 0, successes: 0 };
+const healthyAtMinimum = { errors: 0, successes: 20 };
 
 function idleAccounts(count: number): AccountSample[] {
   return Array.from({ length: count }, (_, index) =>
@@ -86,7 +91,59 @@ test("increases capacity by one after the healthy period, including at its exact
     healthy: { errors: 1, successes: 100 },
   });
   expect(decide(now, [account], policy)).toEqual([
-    { accountId: 150, event: "increase", concurrency: 3, maxConcurrency: 3 },
+    { accountId: 150, event: "increase", concurrency: 3, maxConcurrency: 3, priority: 10, priorityBump: 0 },
+  ]);
+});
+
+test.each([0, 19])("blocks bumped accounts from recovering with %d requests in the healthy window", (successes) => {
+  const traffic = { errors: 0, successes: 20 };
+  const belowMax = sample(150, {
+    concurrency: 2, priority: 13, priorityBump: 3, recent: traffic, healthy: { errors: 0, successes },
+  });
+  const atMax = { ...belowMax, id: 151, concurrency: 3 };
+  expect(decide(now, [belowMax, atMax], policy)).toEqual([]);
+});
+
+test("returns one step on a partial increase at the healthy request minimum", () => {
+  const account = sample(150, {
+    concurrency: 1, priority: 13, priorityBump: 3, recent: noTraffic, healthy: { errors: 1, successes: 19 },
+  });
+  expect(decide(now, [account], { ...policy, healthyRate: 0.1 })).toEqual([
+    { accountId: 150, event: "increase", concurrency: 2, maxConcurrency: 3, priority: 12, priorityBump: 2 },
+  ]);
+});
+
+test("at maximum capacity returns the whole bump without making priority negative", () => {
+  const account = sample(150, { concurrency: 2, priority: 2, priorityBump: 4, recent: noTraffic, healthy: healthyAtMinimum });
+  expect(decide(now, [account], policy)).toEqual([
+    { accountId: 150, event: "increase", concurrency: 3, maxConcurrency: 3, priority: 0, priorityBump: 0 },
+  ]);
+});
+
+test("step zero keeps priority on decrease and partial recovery, then restores it at maximum", () => {
+  const settings = { ...policy, priorityStep: 0 };
+  const bad = sample(150, { priority: 13, priorityBump: 3 });
+  const healthy = { ...bad, recent: noTraffic, healthy: healthyAtMinimum };
+  expect(decide(now, [bad], settings)).toEqual([
+    { accountId: 150, event: "decrease", concurrency: 2, priority: 13, priorityBump: 3 },
+  ]);
+  expect(decide(now, [{ ...healthy, concurrency: 1 }], settings)).toEqual([
+    { accountId: 150, event: "increase", concurrency: 2, maxConcurrency: 3, priority: 13, priorityBump: 3 },
+  ]);
+  expect(decide(now, [{ ...healthy, concurrency: 2 }], settings)).toEqual([
+    { accountId: 150, event: "increase", concurrency: 3, maxConcurrency: 3, priority: 10, priorityBump: 0 },
+  ]);
+});
+
+test.each([3, 4])("restores stranded priority at concurrency %d after the healthy period", (concurrency) => {
+  const account = sample(150, {
+    concurrency, priority: 13, priorityBump: 3, recent: noTraffic, healthy: healthyAtMinimum,
+    lastChangeAt: "2026-11-19T11:30:00Z",
+  });
+  expect(decide(now - 1, [account], policy)).toEqual([]);
+  expect(decide(now, [{ ...account, healthy: { errors: 1, successes: 99 } }], policy)).toEqual([]);
+  expect(decide(now, [account], { ...policy, priorityStep: 0 })).toEqual([
+    { accountId: 150, event: "restore_priority", maxConcurrency: 3, priority: 10, priorityBump: 0 },
   ]);
 });
 
@@ -118,10 +175,10 @@ test("leaves owner-set capacity above the maximum alone even when the account is
   expect(decide(now, [sample(150, { concurrency: 4 })], policy)).toEqual([]);
 });
 
-test("treats zero traffic with no recorded change as healthy", () => {
+test("treats zero traffic with no recorded change or priority bump as healthy", () => {
   const account = sample(150, { concurrency: 1, recent: noTraffic, healthy: noTraffic });
   expect(decide(now, [account], policy)).toEqual([
-    { accountId: 150, event: "increase", concurrency: 2, maxConcurrency: 3 },
+    { accountId: 150, event: "increase", concurrency: 2, maxConcurrency: 3, priority: 10, priorityBump: 0 },
   ]);
 });
 

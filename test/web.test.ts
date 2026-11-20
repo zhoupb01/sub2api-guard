@@ -1,29 +1,44 @@
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "../src/config";
 import { openGuardDb, type GuardDb } from "../src/guard-db";
-import { createManualChange } from "../src/main";
+import { createGuard, createManualChange } from "../src/main";
+import { defaultSettings } from "../src/settings";
 import { openAdminApi } from "../src/sub2api";
-import { startStatusServer } from "../src/web/server";
-import { createStatusStore, type DecisionRecord, type StatusSnapshot, type TickAccount } from "../src/web/store";
+import { createProbeRunner } from "../src/web/probe-runner";
+import { startStatusServer, type ChangeAccount } from "../src/web/server";
+import { createStatusStore, type DecisionRecord, type StatusSnapshot, type StatusStore, type TickAccount } from "../src/web/store";
 
-const policy = {
-  windowMinutes: 10,
-  minRequests: 20,
-  errorRate: 0.05,
-  cooldownMinutes: 10,
-  healthyMinutes: 30,
-  healthyRate: 0.01,
-  minSchedulable: 4,
-  reopenMinutes: 720,
-  maxConcurrency: 3,
-  maxOverrides: {},
-};
+const pageHtml = '<!doctype html><html lang="zh-CN"><div id="root"></div></html>';
+let dist: string;
+beforeAll(async () => {
+  dist = await mkdtemp(join(tmpdir(), "sub2api-guard-web-"));
+  const assets = join(dist, "assets");
+  await mkdir(assets);
+  await writeFile(join(dist, "index.html"), pageHtml);
+  await writeFile(join(assets, "index-abc.js"), "export const app = 1;");
+  await symlink("../index.html", join(assets, "outside.html"));
+});
+afterAll(async () => {
+  await rm(dist, { recursive: true, force: true });
+});
 
 const tickAt = "2026-11-19T12:00:00.000Z";
 const tickTime = Date.parse(tickAt);
 const webPassword = "test-web-password";
 const manualDisabled = async () => "disabled" as const;
+const probe = createProbeRunner({ baseUrl: "", adminApiKey: "", probeApiKey: "", groupName: "账号测试" });
 const sessionCookie = "guard_session=1797681600.fda6cdd2b2aa5c15800cae0baf1767930bb0e4fbb1ea595588ba74cc0172095d";
+
+function startTestServer(store: StatusStore, password: string, changeAccount: ChangeAccount, now = () => tickTime) {
+  return startStatusServer(store, 0, password, { dist, changeAccount, now, probe,
+    saveSettings: async () => { throw new Error("Unexpected settings write"); },
+    series: async (range) => ({ range, bucketMinutes: 5, from: tickAt, to: tickAt, accounts: [] }),
+  });
+}
 
 function login(url: URL, password: string, forwardedFor?: string) {
   return fetch(new URL("/login", url), {
@@ -40,6 +55,7 @@ function account(id: number, overrides: Partial<TickAccount> = {}): TickAccount 
     name: `账号 ${id}`,
     concurrency: 2,
     priority: 10,
+    priorityBump: 0,
     loadFactor: null,
     closed: false,
     closedAt: null,
@@ -95,7 +111,7 @@ function closeDecision(id: number): DecisionRecord {
 }
 
 test("keeps the 200 newest decisions, newest first", () => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
+  const store = createStatusStore({ groupId: 34, dryRun: true });
   store.recordTick({ now: tickAt, accounts: [account(1)] });
   for (let id = 1; id <= 205; id += 1) store.addDecision(decreaseDecision(id));
 
@@ -106,7 +122,7 @@ test("keeps the 200 newest decisions, newest first", () => {
 });
 
 test("shows a closed account from fresh tick data with its reopen time", () => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
+  const store = createStatusStore({ groupId: 34, dryRun: true });
   store.recordTick({
     now: tickAt,
     accounts: [account(1, { closed: true, closedAt: "2026-11-19T00:00:00.000Z" })],
@@ -117,6 +133,7 @@ test("shows a closed account from fresh tick data with its reopen time", () => {
     name: "账号 1",
     concurrency: 2,
     priority: 10,
+    priorityBump: 0,
     loadFactor: null,
     maxConcurrency: 3,
     usable: true,
@@ -130,12 +147,12 @@ test("shows a closed account from fresh tick data with its reopen time", () => {
 });
 
 test("logs in with the shared password and sets the signed session cookie for 30 days", async () => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
+  const store = createStatusStore({ groupId: 34, dryRun: true });
+  const server = startTestServer(store, webPassword, manualDisabled, () => tickTime);
   try {
     const response = await login(server.url, webPassword);
-    expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("/");
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe("");
     expect(response.headers.get("set-cookie")).toBe(
       `${sessionCookie}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`,
     );
@@ -145,7 +162,7 @@ test("logs in with the shared password and sets the signed session cookie for 30
 });
 
 test("serves the snapshot at /api/status", async () => {
-  const store = createStatusStore({ groupId: 34, dryRun: false, policy: { ...policy, maxOverrides: { "7": 2 } } });
+  const store = createStatusStore({ groupId: 34, dryRun: false, settings: { value: { ...defaultSettings, maxOverrides: { "7": 2 } }, updatedAt: null } });
   store.recordTick({
     now: tickAt,
     accounts: [
@@ -156,7 +173,7 @@ test("serves the snapshot at /api/status", async () => {
   });
   store.addDecision(closeDecision(1));
 
-  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
+  const server = startTestServer(store, webPassword, manualDisabled, () => tickTime);
   try {
     const response = await fetch(new URL("/api/status", server.url), { headers: { cookie: sessionCookie } });
     const snapshot = await response.json() as StatusSnapshot;
@@ -164,7 +181,8 @@ test("serves the snapshot at /api/status", async () => {
     expect(response.status).toBe(200);
     expect(snapshot.dryRun).toBe(false);
     expect(snapshot.groupId).toBe(34);
-    expect(snapshot.policy).toEqual({ ...policy, maxOverrides: { "7": 2 } });
+    expect(snapshot.settings).toEqual({ ...defaultSettings, maxOverrides: { "7": 2 } });
+    expect(snapshot.settingsUpdatedAt).toBeNull();
     expect(snapshot.lastTickAt).toBe(tickAt);
     expect(snapshot.lastError).toBeNull();
     expect(snapshot.accounts.map(({ id, maxConcurrency, closed }) => ({ id, maxConcurrency, closed }))).toEqual([
@@ -178,6 +196,7 @@ test("serves the snapshot at /api/status", async () => {
       name: "账号 1",
       concurrency: 2,
       priority: 1,
+      priorityBump: 0,
       loadFactor: 4,
       maxConcurrency: 3,
       usable: true,
@@ -196,10 +215,10 @@ test("serves the snapshot at /api/status", async () => {
 });
 
 test("reports the latest tick error and clears it on the next tick", async () => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
+  const store = createStatusStore({ groupId: 34, dryRun: true });
   store.recordError("2026-11-19T11:59:00.000Z", "connect ECONNREFUSED");
 
-  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
+  const server = startTestServer(store, webPassword, manualDisabled, () => tickTime);
   try {
     const url = new URL("/api/status", server.url);
     const headers = { cookie: sessionCookie };
@@ -227,16 +246,13 @@ function expectHtml(response: Response, status: number) {
   expect(response.headers.get("referrer-policy")).toBe("no-referrer");
 }
 
-test("shows the login form and protects status from anonymous requests", async () => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
+test("serves the SPA and protects status from anonymous requests", async () => {
+  const store = createStatusStore({ groupId: 34, dryRun: true });
+  const server = startTestServer(store, webPassword, manualDisabled, () => tickTime);
   try {
     const page = await fetch(server.url);
     expectHtml(page, 200);
-    const html = await page.text();
-    expect(html).toContain('<html lang="zh-CN">');
-    expect(html).toContain('<form method="post" action="/login">');
-    expect(html).toContain('type="password"');
+    expect(await page.text()).toBe(pageHtml);
 
     const response = await fetch(new URL("/api/status", server.url));
     expect(response.status).toBe(401);
@@ -247,8 +263,8 @@ test("shows the login form and protects status from anonymous requests", async (
 });
 
 test("protects manual account changes from anonymous requests", async () => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
+  const store = createStatusStore({ groupId: 34, dryRun: true });
+  const server = startTestServer(store, webPassword, manualDisabled, () => tickTime);
   try {
     const response = await fetch(new URL("/api/accounts/1", server.url), {
       method: "POST",
@@ -277,9 +293,9 @@ test.each([
   ["application/json", '{'],
   ["text/plain", '{"concurrency":2}'],
 ])("rejects invalid manual input (%s, %s)", async (contentType, body) => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
+  const store = createStatusStore({ groupId: 34, dryRun: true });
   store.recordTick({ now: tickAt, accounts: [account(1)] });
-  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
+  const server = startTestServer(store, webPassword, manualDisabled, () => tickTime);
   try {
     const response = await fetch(new URL("/api/accounts/1", server.url), {
       method: "POST",
@@ -295,11 +311,11 @@ test.each([
 });
 
 test("rejects unknown accounts and manual changes without an admin key", async () => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
+  const store = createStatusStore({ groupId: 34, dryRun: true });
   store.recordTick({ now: tickAt, accounts: [account(1)] });
   const { state, decisions, close } = openGuardDb(":memory:", true);
   const changeAccount = createManualChange({ store, admin: undefined, state, simulated: new Map(), decisions });
-  const server = startStatusServer(store, 0, webPassword, changeAccount, () => tickTime);
+  const server = startTestServer(store, webPassword, changeAccount, () => tickTime);
   try {
     const status = await fetch(new URL("/api/status", server.url), { headers: { cookie: sessionCookie } });
     expect((await status.json() as StatusSnapshot).manualEnabled).toBe(false);
@@ -336,12 +352,13 @@ async function withManualServer(
   const { state, decisions, close } = openGuardDb(":memory:", dryRun);
   try {
     const closedAt = simulatedConcurrency === undefined || simulatedConcurrency === null ? "2026-11-19T00:00:00.000Z" : undefined;
-    state.set(1, { closedAt, lastChangeAt: tickAt });
-    const store = createStatusStore({ groupId: 34, dryRun, policy, manualEnabled: true });
+    state.set(1, { closedAt, lastChangeAt: tickAt, priorityBump: 3 });
+    const store = createStatusStore({ groupId: 34, dryRun, manualEnabled: true });
     store.recordTick({
       now: tickAt,
       accounts: [account(1, {
         concurrency: simulatedConcurrency ?? 2,
+        priorityBump: 3,
         closed: closedAt !== undefined,
         closedAt: closedAt ?? null,
         lastChangeAt: tickAt,
@@ -351,8 +368,8 @@ async function withManualServer(
     const simulated = new Map(simulatedConcurrency === undefined ? [] : [[1, {
       concurrency: simulatedConcurrency, actual: { concurrency: 2, closed: false },
     }]]);
-    const changeAccount = createManualChange({ store, admin, state, simulated, decisions });
-    const server = startStatusServer(store, 0, webPassword, changeAccount, () => tickTime);
+    const changeAccount = createManualChange({ store, admin, state, simulated, decisions, now: () => tickTime });
+    const server = startTestServer(store, webPassword, changeAccount, () => tickTime);
     try {
       await check({ url: server.url, decisions, state });
     } finally {
@@ -410,6 +427,8 @@ test.each([true, false])("applies and records manual changes immediately with dr
         expect(row[field]).toBe(to);
         expect(row.closedAt).toBe("2026-11-19T00:00:00.000Z");
       }
+      expect(row.priorityBump).toBe(field === "concurrency" ? 3 : 0);
+      expect(state.get(1)?.priorityBump).toBe(row.priorityBump);
       const [decision] = snapshot.decisions;
       const lastChangeAt = field === "concurrency" || (field === "schedulable" && to) ? decision.ts : previousChangeAt;
       expect(row.lastChangeAt).toBe(lastChangeAt);
@@ -437,10 +456,10 @@ test.each([
 ])("manual changes replace the dry-run override $simulatedConcurrency", async ({ simulatedConcurrency, change, concurrency, closed }) => {
   await withManualServer(true, () => Response.json({ code: 0, data: { success_ids: [1] } }), async ({ url }) => {
     expect((await postManualChange(url, change)).status).toBe(200);
-    expect((await manualStatus(url)).accounts[0]).toMatchObject({ concurrency, closed, closedAt: null, reopenAt: null });
+    expect((await manualStatus(url)).accounts[0]).toMatchObject({ concurrency, closed, closedAt: null, reopenAt: null, priorityBump: 3 });
 
     expect((await postManualChange(url, { schedulable: true })).status).toBe(200);
-    expect((await manualStatus(url)).accounts[0]).toMatchObject({ concurrency, closed: false, closedAt: null, reopenAt: null });
+    expect((await manualStatus(url)).accounts[0]).toMatchObject({ concurrency, closed: false, closedAt: null, reopenAt: null, priorityBump: 3 });
   }, simulatedConcurrency);
 });
 
@@ -461,22 +480,23 @@ test("reports a rejected admin write and leaves status and history intact", asyn
 });
 
 test("shows a login error for a wrong password", async () => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
+  const store = createStatusStore({ groupId: 34, dryRun: true });
+  const server = startTestServer(store, webPassword, manualDisabled, () => tickTime);
   try {
     const response = await login(server.url, "wrong");
-    expectHtml(response, 401);
+    expect(response.status).toBe(401);
+    expect(response.headers.get("content-type")).toContain("application/json");
     expect(response.headers.get("set-cookie")).toBeNull();
-    expect(await response.text()).toContain("密码不对");
+    expect(await response.json()).toEqual({ error: "密码不对" });
   } finally {
     server.stop(true);
   }
 });
 
 test("limits the sixth attempt by the last forwarded IP and lets failures age out", async () => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
+  const store = createStatusStore({ groupId: 34, dryRun: true });
   let now = tickTime;
-  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => now);
+  const server = startTestServer(store, webPassword, manualDisabled, () => now);
   try {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       now = tickTime + attempt * 60_000;
@@ -484,8 +504,8 @@ test("limits the sixth attempt by the last forwarded IP and lets failures age ou
       expect(response.status).toBe(401);
     }
     const limited = await login(server.url, "wrong", "198.51.100.6, 203.0.113.1");
-    expectHtml(limited, 429);
-    expect(await limited.text()).toContain("试太多次了，15 分钟后再试");
+    expect(limited.status).toBe(429);
+    expect(await limited.json()).toEqual({ error: "试太多次了，15 分钟后再试" });
     expect((await login(server.url, "wrong", "198.51.100.6, 203.0.113.2")).status).toBe(401);
 
     now = tickTime + 15 * 60_000;
@@ -497,8 +517,8 @@ test("limits the sixth attempt by the last forwarded IP and lets failures age ou
 });
 
 test("shares the peer IP limit between direct and forwarded logins", async () => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
+  const store = createStatusStore({ groupId: 34, dryRun: true });
+  const server = startTestServer(store, webPassword, manualDisabled, () => tickTime);
   try {
     const url = new URL(server.url);
     url.hostname = "127.0.0.1";
@@ -517,16 +537,14 @@ test("shares the peer IP limit between direct and forwarded logins", async () =>
 });
 
 test("shows the status page after login and rejects unknown paths and methods", async () => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
+  const store = createStatusStore({ groupId: 34, dryRun: true });
+  const server = startTestServer(store, webPassword, manualDisabled, () => tickTime);
   try {
     const response = await login(server.url, webPassword);
     const cookie = response.headers.get("set-cookie")!.split(";")[0];
     const page = await fetch(server.url, { headers: { cookie } });
     expectHtml(page, 200);
-    const html = await page.text();
-    expect(html).toContain('<html lang="zh-CN">');
-    expect(html).toContain('<form method="post" action="/logout"');
+    expect(await page.text()).toBe(pageHtml);
     expect((await fetch(new URL("/api/status", server.url), { headers: { cookie } })).status).toBe(200);
 
     const missing = await fetch(new URL("/nope", server.url));
@@ -544,8 +562,8 @@ test("shows the status page after login and rejects unknown paths and methods", 
 
 test("an empty WEB_PASSWORD stops the status server from starting", () => {
   const config = loadConfig({ DATABASE_URL: "postgres://unused", WEB_PASSWORD: "" });
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  expect(() => startStatusServer(store, 0, config.webPassword, manualDisabled).stop(true)).toThrow("WEB_PASSWORD is empty");
+  const store = createStatusStore({ groupId: 34, dryRun: true });
+  expect(() => startTestServer(store, config.webPassword, manualDisabled).stop(true)).toThrow("WEB_PASSWORD is empty");
 });
 
 test.each([
@@ -554,32 +572,126 @@ test.each([
   { name: "expired session", cookie: sessionCookie, password: webPassword, now: tickTime + 30 * 86_400_000 },
   { name: "previous password", cookie: sessionCookie, password: "new-web-password", now: tickTime },
 ])("rejects a cookie with $name", async ({ cookie, password, now }) => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, password, manualDisabled, () => now);
+  const store = createStatusStore({ groupId: 34, dryRun: true });
+  const server = startTestServer(store, password, manualDisabled, () => now);
   try {
     const headers = { cookie };
     const response = await fetch(new URL("/api/status", server.url), { headers });
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: "unauthorized" });
-    expect(await (await fetch(server.url, { headers })).text()).toContain('action="/login"');
+    expect(await (await fetch(server.url, { headers })).text()).toBe(pageHtml);
   } finally {
     server.stop(true);
   }
 });
 
-test("logs out by expiring the session cookie and returning to the home page", async () => {
-  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
+test("logs out by expiring the session cookie", async () => {
+  const store = createStatusStore({ groupId: 34, dryRun: true });
+  const server = startTestServer(store, webPassword, manualDisabled, () => tickTime);
   try {
     const response = await fetch(new URL("/logout", server.url), {
       method: "POST",
       redirect: "manual",
       headers: { cookie: sessionCookie },
     });
-    expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("/");
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe("");
     expect(response.headers.get("set-cookie")).toBe("guard_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0");
   } finally {
     server.stop(true);
+  }
+});
+
+test("serves a public asset with its content type and immutable cache headers", async () => {
+  const store = createStatusStore({ groupId: 34, dryRun: true });
+  const server = startTestServer(store, webPassword, manualDisabled);
+  try {
+    const asset = await fetch(new URL("/assets/index-abc.js", server.url));
+    expect(asset.status).toBe(200);
+    expect(asset.headers.get("content-type")).toContain("javascript");
+    expect(asset.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+    expect(await asset.text()).toBe("export const app = 1;");
+    for (const path of ["/assets/missing.js", "/assets/..%2findex.html", "/assets/outside.html"]) {
+      expect((await fetch(new URL(path, server.url))).status).toBe(404);
+    }
+    // Sending the path directly tests traversal before the client's URL parser can normalize it.
+    for (const path of ["/assets/../", "/assets/%2e%2e/"]) {
+      const status = await new Promise((resolve, reject) => {
+        request({ hostname: "127.0.0.1", port: server.port, path }, (response) => {
+          response.resume();
+          resolve(response.statusCode);
+        }).on("error", reject).end();
+      });
+      expect(status).toBe(404);
+    }
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("requires a session and a supported range for series", async () => {
+  const store = createStatusStore({ groupId: 34, dryRun: true });
+  const server = startTestServer(store, webPassword, manualDisabled);
+  try {
+    expect((await fetch(new URL("/api/series?range=1h", server.url))).status).toBe(401);
+    const headers = { cookie: sessionCookie };
+    for (const query of ["", "?range=2h", "?range=constructor"]) {
+      const response = await fetch(new URL("/api/series" + query, server.url), { headers });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "参数不对" });
+    }
+    const response = await fetch(new URL("/api/series?range=1h", server.url), { headers });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ range: "1h", bucketMinutes: 5, from: tickAt, to: tickAt, accounts: [] });
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("requires an authenticated full JSON settings object and saves valid changes", async () => {
+  const guardDb = openGuardDb(":memory:", true);
+  const guard = createGuard({ groupId: 34, dryRun: true, guardDb, now: () => tickTime, database: {
+    accounts: async () => [], closedAccounts: async () => [],
+    traffic: async () => ({ errors: new Map(), successes: new Map() }),
+  } });
+  const server = startStatusServer(guard.store, 0, webPassword, {
+    dist, probe, now: () => tickTime, changeAccount: guard.changeAccount, saveSettings: guard.saveSettings,
+    series: async () => { throw new Error("Unexpected series read"); },
+  });
+  const url = new URL("/api/settings", server.url);
+  const request = (body: string, contentType = "application/json; charset=utf-8", cookie = sessionCookie) =>
+    fetch(url, { method: "POST", headers: { "content-type": contentType, cookie }, body });
+  try {
+    const value = { ...defaultSettings, maxOverrides: { "12": 6 }, errorPatterns: ["NEW"], minSchedulable: 0,
+      priorityStep: 0, errorRate: 1, healthyRate: 1 };
+    expect((await request(JSON.stringify(value), "application/json", "")).status).toBe(401);
+
+    const invalidValues = [
+      null, [], { ...value, extra: 1 }, { ...value, priorityStep: undefined },
+      { ...value, windowMinutes: 0 }, { ...value, cooldownMinutes: 1.5 },
+      { ...value, healthyMinutes: "30" }, { ...value, reopenMinutes: 0 },
+      { ...value, minRequests: 0 }, { ...value, maxConcurrency: 0 },
+      { ...value, minSchedulable: -1 }, { ...value, priorityStep: -1 },
+      { ...value, errorRate: 0 }, { ...value, healthyRate: 1.1 },
+      { ...value, maxOverrides: [] }, { ...value, maxOverrides: { "-12": 6 } },
+      { ...value, maxOverrides: { "12": 0 } }, { ...value, errorPatterns: [] },
+      { ...value, errorPatterns: [" "] }, { ...value, errorPatterns: [42] },
+    ];
+    for (const body of [...invalidValues.map((value) => JSON.stringify(value)), "{"]) {
+      const response = await request(body);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "参数不对" });
+    }
+    expect((await request(JSON.stringify(value), "text/plain")).status).toBe(400);
+    expect(guardDb.settings.get().updatedAt).toBeNull();
+
+    const response = await request(JSON.stringify(value));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(guardDb.settings.get()).toEqual({ value, updatedAt: tickAt });
+    expect(await manualStatus(server.url)).toMatchObject({ settings: value, settingsUpdatedAt: tickAt });
+  } finally {
+    server.stop(true);
+    guardDb.close();
   }
 });

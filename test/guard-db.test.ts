@@ -1,4 +1,6 @@
+import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
+import { defaultSettings } from "../src/settings";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +15,8 @@ function decision(id: number, dryRun: boolean): DecisionRecord {
     name: `账号 ${id}`,
     concurrency: 2,
     nextConcurrency: 1,
+    priority: 10,
+    nextPriority: 11,
     minRequests: 20,
     errorRate: 0.05,
     cooldownMinutes: 10,
@@ -52,6 +56,25 @@ test("returns the newest 200 decisions for the current mode in newest-first orde
   }
 }));
 
+test("reads all decisions since the boundary for the current mode, oldest first", () => withTempDatabase((path) => {
+  const dry = openGuardDb(path, true);
+  const live = openGuardDb(path, false);
+  try {
+    const boundary = "2026-11-19T12:00:00.000Z";
+    dry.decisions.append({ ...decision(999, true), ts: "2026-11-19T12:01:00.000Z" });
+    dry.decisions.append({ ...decision(888, true), ts: "2026-11-19T11:59:59.999Z" });
+    for (let id = 1; id <= 205; id++) dry.decisions.append(decision(id, true));
+    live.decisions.append(decision(777, false));
+    expect(dry.decisions.since(boundary).map(({ id }) => id)).toEqual([
+      ...Array.from({ length: 205 }, (_, index) => index + 1), 999,
+    ]);
+    expect(live.decisions.since(boundary)).toEqual([decision(777, false)]);
+  } finally {
+    live.close();
+    dry.close();
+  }
+}));
+
 test("returns no decisions before any are written", () => {
   const { decisions, close } = openGuardDb(":memory:", true);
   try {
@@ -80,6 +103,53 @@ test("round-trips adjustment, reopen and manual decisions exactly", () => {
     db.close();
   }
 });
+
+test("migrates an existing account_state and persists a mode-specific bump", () => withTempDatabase((path) => {
+  const old = new Database(path);
+  old.run(`
+    CREATE TABLE account_state (
+      dry_run INTEGER NOT NULL, account_id INTEGER NOT NULL, last_change_at TEXT,
+      closed_at TEXT, last_floor_push_at TEXT, PRIMARY KEY (dry_run, account_id)
+    );
+    INSERT INTO account_state VALUES (1, 1, '2026-11-19T12:00:00.000Z', NULL, NULL);
+  `);
+  old.close();
+  const first = openGuardDb(path, true);
+  try {
+    expect(first.state.get(1)).toMatchObject({ lastChangeAt: "2026-11-19T12:00:00.000Z", priorityBump: 0 });
+    first.state.set(1, { priorityBump: 2 });
+    first.state.set(1, { closedAt: "2026-11-19T12:01:00.000Z" });
+  } finally {
+    first.close();
+  }
+  const dry = openGuardDb(path, true);
+  const live = openGuardDb(path, false);
+  try {
+    expect(dry.state.get(1)).toMatchObject({ priorityBump: 2, closedAt: "2026-11-19T12:01:00.000Z" });
+    expect(live.state.get(1)).toBeUndefined();
+  } finally {
+    dry.close();
+    live.close();
+  }
+}));
+
+test("defaults settings before the first save and shares saved settings across modes", () => withTempDatabase((path) => {
+  const first = openGuardDb(path, true);
+  const updatedAt = "2026-11-19T12:00:00.000Z";
+  const value = { ...defaultSettings, priorityStep: 0, maxOverrides: { "7": 4 } };
+  try {
+    expect(first.settings.get()).toEqual({ value: defaultSettings, updatedAt: null });
+    first.settings.save(value, updatedAt);
+  } finally {
+    first.close();
+  }
+  const live = openGuardDb(path, false);
+  try {
+    expect(live.settings.get()).toEqual({ value, updatedAt });
+  } finally {
+    live.close();
+  }
+}));
 
 test("clears a state field with undefined and preserves omitted fields", () => {
   const { state, close } = openGuardDb(":memory:", true);

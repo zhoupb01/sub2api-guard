@@ -11,6 +11,8 @@ type ProbeOptions = {
   model: string;
   prompt: string;
   repeat: number;
+  log(message: string): void;
+  onResult?(result: ProbeResult): void;
 };
 
 type RequestResult = {
@@ -21,7 +23,7 @@ type RequestResult = {
   error?: string;
 };
 
-type ProbeResult = RequestResult & { accountId: number; name: string; requestNumber: number };
+export type ProbeResult = RequestResult & { accountId: number; name: string; requestNumber: number };
 
 type ResponseEvent = {
   type?: string;
@@ -81,7 +83,7 @@ async function sendProbe(options: ProbeOptions, signal: AbortSignal) {
 }
 
 export async function runProbe(options: ProbeOptions, signal: AbortSignal) {
-  const { baseUrl, adminApiKey, probeApiKey, groupName, accountIds, repeat } = options;
+  const { baseUrl, adminApiKey, probeApiKey, groupName, accountIds, repeat, log, onResult } = options;
   const results: ProbeResult[] = [];
   let exitCode = 0;
   const admin = openAdminApi(baseUrl, adminApiKey);
@@ -97,7 +99,7 @@ export async function runProbe(options: ProbeOptions, signal: AbortSignal) {
       const account = await admin.getAccount(id);
       signal.throwIfAborted();
       const groupIds = account.group_ids ?? []; // Empty bindings are omitted by the account DTO.
-      console.error(`Account ${id} (${account.name}): moving to ${group.name}`);
+      log(`Account ${id} (${account.name}): moving to ${group.name}`);
       try {
         await admin.setGroups(id, [group.id]);
         signal.throwIfAborted();
@@ -109,24 +111,26 @@ export async function runProbe(options: ProbeOptions, signal: AbortSignal) {
         // Group bindings reach the scheduler via its outbox worker (default poll interval: 1 s).
         await delay(1_000, undefined, { signal });
         for (let requestNumber = 1; requestNumber <= repeat && !signal.aborted; requestNumber++) {
-          console.error(`Account ${id}: request ${requestNumber}/${repeat}`);
-          const result = await sendProbe(options, signal);
-          results.push({ accountId: id, name: account.name, requestNumber, ...result });
+          log(`Account ${id}: request ${requestNumber}/${repeat}`);
+          const response = await sendProbe(options, signal);
+          const result = { accountId: id, name: account.name, requestNumber, ...response };
+          results.push(result);
+          onResult?.(result);
           if (result.error !== undefined) exitCode = 1;
         }
       } finally {
-        console.error(`Account ${id}: restoring scheduling and group bindings`);
+        log(`Account ${id}: restoring scheduling and group bindings`);
         try {
           // Leave the account isolated if its original scheduling state could not be restored.
           await admin.setSchedulable(id, account.schedulable);
           await admin.setGroups(id, groupIds);
         } catch (error) {
           restoreFailed = true;
-          console.error(`Account ${id}: restore failed (${errorMessage(error)}). Reapply schedulable=${account.schedulable} then group_ids=[${groupIds.join(",")}].`);
+          log(`Account ${id}: restore failed (${errorMessage(error)}). Reapply schedulable=${account.schedulable} then group_ids=[${groupIds.join(",")}].`);
         }
       }
     } catch (error) {
-      if (!signal.aborted) console.error(`Account ${id}: ${errorMessage(error)}`);
+      if (!signal.aborted) log(`Account ${id}: ${errorMessage(error)}`);
       exitCode = 1;
     }
     if (restoreFailed) {
@@ -197,6 +201,7 @@ async function main(signal: AbortSignal) {
     model: values.model,
     repeat: positiveInteger(values.repeat, "--repeat"),
     prompt: values.prompt ?? await Bun.file(promptFile!).text(),
+    log: console.error,
   }, signal);
   printResults(results);
   process.exitCode = exitCode;

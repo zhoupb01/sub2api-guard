@@ -1,15 +1,4 @@
-export interface Policy {
-  windowMinutes: number;
-  minRequests: number;
-  errorRate: number;
-  cooldownMinutes: number;
-  healthyMinutes: number;
-  healthyRate: number;
-  minSchedulable: number;
-  reopenMinutes: number;
-  maxConcurrency: number;
-  maxOverrides: Record<string, number>;
-}
+import { maxConcurrencyFor, type Settings } from "./settings";
 
 export interface Traffic {
   errors: number;
@@ -19,6 +8,8 @@ export interface Traffic {
 export interface AccountSample {
   id: number;
   concurrency: number;
+  priority: number;
+  priorityBump: number;
   usable: boolean;
   lastChangeAt?: string;
   recent: Traffic;
@@ -30,10 +21,14 @@ export interface ReopenCandidate {
   closedAt?: string;
 }
 
+type PriorityAdjustment = { priority: number; priorityBump: number };
+
 export type Decision = { accountId: number } & (
-  | { event: "decrease"; concurrency: number }
-  | { event: "increase"; concurrency: number; maxConcurrency: number }
-  | { event: "close" | "floor_blocked"; remainingUsable: number }
+  | ({ event: "decrease"; concurrency: number } & PriorityAdjustment)
+  | ({ event: "increase"; concurrency: number; maxConcurrency: number } & PriorityAdjustment)
+  | ({ event: "restore_priority"; maxConcurrency: number } & PriorityAdjustment)
+  | { event: "close"; remainingUsable: number }
+  | { event: "floor_blocked"; remainingUsable: number }
   | { event: "reopen"; closedAt: string }
 );
 
@@ -66,20 +61,23 @@ export function decideReopens(
   return decisions;
 }
 
-export function decide(now: number, samples: readonly AccountSample[], policy: Policy): AdjustmentDecision[] {
+export function decide(now: number, samples: readonly AccountSample[], policy: Settings): AdjustmentDecision[] {
   const decisions: AdjustmentDecision[] = [];
   const usableAccounts = samples.filter((account) => account.usable).length;
   let closePlanned = false;
   for (const account of samples) {
-    const { id, concurrency } = account;
-    const max = policy.maxOverrides[id] ?? policy.maxConcurrency;
-    if (concurrency > max) continue;
+    const { id, concurrency, priority, priorityBump } = account;
+    const max = maxConcurrencyFor(policy, id);
 
     const age = account.lastChangeAt === undefined ? Infinity : now - Date.parse(account.lastChangeAt);
     const { total, rate } = trafficStats(account.recent);
-    if (age >= policy.cooldownMinutes * minute && total >= policy.minRequests && rate >= policy.errorRate) {
+    const { total: healthyTotal, rate: healthyRate } = trafficStats(account.healthy);
+    if (concurrency <= max && age >= policy.cooldownMinutes * minute && total >= policy.minRequests && rate >= policy.errorRate) {
       if (concurrency > 1) {
-        decisions.push({ accountId: id, event: "decrease", concurrency: concurrency - 1 });
+        decisions.push({
+          accountId: id, event: "decrease", concurrency: concurrency - 1,
+          priority: priority + policy.priorityStep, priorityBump: priorityBump + policy.priorityStep,
+        });
       } else {
         const remainingUsable = usableAccounts - Number(account.usable);
         if (remainingUsable < policy.minSchedulable) {
@@ -90,11 +88,23 @@ export function decide(now: number, samples: readonly AccountSample[], policy: P
         }
       }
     } else if (
-      concurrency < max &&
       age >= policy.healthyMinutes * minute &&
-      trafficStats(account.healthy).rate < policy.healthyRate
+      healthyRate < policy.healthyRate &&
+      (priorityBump === 0 || healthyTotal >= policy.minRequests)
     ) {
-      decisions.push({ accountId: id, event: "increase", concurrency: concurrency + 1, maxConcurrency: max });
+      if (concurrency < max) {
+        const nextConcurrency = concurrency + 1;
+        const giveBack = nextConcurrency === max ? priorityBump : Math.min(policy.priorityStep, priorityBump);
+        decisions.push({
+          accountId: id, event: "increase", concurrency: nextConcurrency, maxConcurrency: max,
+          priority: Math.max(0, priority - giveBack), priorityBump: priorityBump - giveBack,
+        });
+      } else if (priorityBump > 0) {
+        decisions.push({
+          accountId: id, event: "restore_priority", maxConcurrency: max,
+          priority: Math.max(0, priority - priorityBump), priorityBump: 0,
+        });
+      }
     }
   }
   return decisions;

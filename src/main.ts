@@ -1,9 +1,13 @@
+import { fileURLToPath } from "node:url";
 import { sendBark } from "./bark";
 import { loadConfig } from "./config";
 import { openDatabase } from "./db";
 import { decide, decideReopens, minute, recentSince, trafficStats } from "./decide";
 import { openGuardDb, type GuardDb } from "./guard-db";
+import { createSeries } from "./series";
+import type { Settings } from "./settings";
 import { openAdminApi } from "./sub2api";
+import { createProbeRunner } from "./web/probe-runner";
 import { startStatusServer, type ChangeAccount } from "./web/server";
 import { createStatusStore, type DecisionRecord, type RecordedAccount, type StatusStore } from "./web/store";
 
@@ -21,16 +25,18 @@ function logError(operation: string, error: unknown, fields: Record<string, unkn
 
 interface SimulatedAccount {
   // Null represents a simulated close.
-  concurrency: number | null;
+  concurrency?: number | null;
+  priority?: number;
   actual: Pick<RecordedAccount, "concurrency" | "closed">;
 }
 
-export function createManualChange({ store, admin, state, simulated, decisions }: {
+export function createManualChange({ store, admin, state, simulated, decisions, now = Date.now }: {
   store: StatusStore;
   admin: ReturnType<typeof openAdminApi> | undefined;
   state: GuardDb["state"];
   simulated: Map<number, SimulatedAccount>;
   decisions: GuardDb["decisions"];
+  now?: () => number;
 }): ChangeAccount {
   const { dryRun } = store.status();
   return async (id, change) => {
@@ -50,13 +56,14 @@ export function createManualChange({ store, admin, state, simulated, decisions }
       return { error: errorMessage(error) };
     }
 
-    const ts = new Date().toISOString();
-    const actual = simulated.get(id)?.actual;
+    const ts = new Date(now()).toISOString();
+    const simulation = simulated.get(id);
+    const actual = simulation?.concurrency === undefined ? undefined : simulation.actual;
     let changes: Parameters<StatusStore["updateAccount"]>[1];
     switch (field) {
       case "concurrency": {
         state.set(id, { lastChangeAt: ts });
-        simulated.delete(id);
+        if (simulation) simulation.concurrency = undefined;
         const closed = actual?.closed ?? account.closed;
         changes = { concurrency: value, lastChangeAt: ts, closed, closedAt: closed ? account.closedAt : null };
         break;
@@ -64,7 +71,7 @@ export function createManualChange({ store, admin, state, simulated, decisions }
       case "schedulable": {
         if (value) state.set(id, { lastChangeAt: ts, closedAt: undefined });
         else if (state.get(id)?.closedAt !== undefined) state.set(id, { closedAt: undefined });
-        simulated.delete(id);
+        if (simulation) simulation.concurrency = undefined;
         changes = {
           concurrency: actual?.concurrency ?? account.concurrency,
           lastChangeAt: value ? ts : account.lastChangeAt,
@@ -73,7 +80,11 @@ export function createManualChange({ store, admin, state, simulated, decisions }
         };
         break;
       }
-      case "priority": changes = { priority: value }; break;
+      case "priority":
+        state.set(id, { priorityBump: 0 });
+        if (simulation) simulation.priority = undefined;
+        changes = { priority: value, priorityBump: 0 };
+        break;
       case "loadFactor": changes = { loadFactor: value }; break;
     }
 
@@ -90,35 +101,36 @@ export function createManualChange({ store, admin, state, simulated, decisions }
   };
 }
 
-async function run() {
-  const config = loadConfig();
-  const { policy, dryRun, barkUrl } = config;
-  const database = openDatabase(config.databaseUrl, config.groupId, config.errorPatterns);
-  const admin = config.adminApiKey ? openAdminApi(config.sub2apiUrl, config.adminApiKey) : undefined;
+export function createGuard({ groupId, dryRun, barkUrl, database, admin, guardDb, probeEnabled, now: clock = Date.now }: {
+  groupId: number;
+  dryRun: boolean;
+  barkUrl?: string;
+  database: Pick<ReturnType<typeof openDatabase>, "accounts" | "closedAccounts" | "traffic">;
+  admin?: ReturnType<typeof openAdminApi>;
+  guardDb: GuardDb;
+  probeEnabled?: boolean;
+  now?: () => number;
+}) {
   const automaticAdmin = dryRun ? undefined : admin;
-  const { state, decisions } = openGuardDb(config.guardDb, dryRun);
+  const { state, decisions, settings } = guardDb;
   const lastSummaryAt = new Map<number, number>();
   const simulated = new Map<number, SimulatedAccount>();
-  const store = createStatusStore({ groupId: config.groupId, dryRun, policy, manualEnabled: admin !== undefined, decisions: decisions.recent(200) });
-  const changeAccount = createManualChange({ store, admin, state, simulated, decisions });
+  const store = createStatusStore({
+    groupId, dryRun, settings: settings.get(), manualEnabled: admin !== undefined, probeEnabled, decisions: decisions.recent(200),
+  });
+  const changeAccount = createManualChange({ store, admin, state, simulated, decisions, now: clock });
 
-  // A tick must finish using its snapshot before a manual change can replace it.
+  // A tick uses one snapshot while changes wait in the same queue.
   let pending: Promise<unknown> = Promise.resolve();
-  function serialize<T>(operation: () => Promise<T>) {
+  function serialize<T>(operation: () => T | Promise<T>) {
     const result = pending.then(operation, operation);
     pending = result;
     return result;
   }
 
-  try {
-    startStatusServer(store, config.webPort, config.webPassword, (id, change) => serialize(() => changeAccount(id, change)));
-    log("web_server", { port: config.webPort });
-  } catch (error) {
-    logError("web_server", error, { port: config.webPort });
-  }
-
   async function tick() {
-    const now = Date.now();
+    const { value: policy } = store.getSettings();
+    const now = clock();
     const nowIso = new Date(now).toISOString();
     try {
       const accountData = [
@@ -136,19 +148,23 @@ async function run() {
         }
         const entry = state.get(account.id);
         const lastChangeAt = entry?.lastChangeAt;
+        const priorityBump = entry?.priorityBump ?? 0;
         const since = new Date(recentSince(now, lastChangeAt, policy.windowMinutes)).toISOString();
         snapshots.push({
           ...account,
           closed,
           closedAt: closed ? entry?.closedAt ?? null : null,
           concurrency: simulation?.concurrency ?? account.concurrency,
+          // A persisted dry-run bump has not been applied to sub2api's priority.
+          priority: simulation?.priority ?? account.priority + (dryRun ? priorityBump : 0),
+          priorityBump,
           lastChangeAt,
           since,
         });
       }
       const healthySince = new Date(now - policy.healthyMinutes * minute).toISOString();
       const windows = snapshots.map(({ id, since }) => ({ account_id: id, since }));
-      const { errors, successes } = await database.traffic(windows, healthySince, nowIso);
+      const { errors, successes } = await database.traffic(windows, healthySince, nowIso, policy.errorPatterns);
       const samples = snapshots.map((account) => {
         const errorCounts = errors.get(account.id);
         const successCounts = successes.get(account.id);
@@ -196,7 +212,8 @@ async function run() {
             continue;
           }
         } else {
-          simulated.delete(account.id);
+          const simulation = simulated.get(account.id);
+          if (simulation) simulation.concurrency = undefined;
         }
         state.set(account.id, { lastChangeAt: nowIso, closedAt: undefined });
 
@@ -217,16 +234,18 @@ async function run() {
       for (const decision of decide(now, openSamples, policy)) {
         const { accountId: id, event } = decision;
         const account = samplesById.get(id)!;
-        const since = event === "increase" ? healthySince : account.since;
-        const stats = trafficStats(event === "increase" ? account.healthy : account.recent);
-        const thresholds = event === "increase"
+        const recovering = event === "increase" || event === "restore_priority";
+        const since = recovering ? healthySince : account.since;
+        const stats = trafficStats(recovering ? account.healthy : account.recent);
+        const thresholds = recovering
           ? { maxConcurrency: decision.maxConcurrency, healthyMinutes: policy.healthyMinutes, healthyRate: policy.healthyRate }
           : { minRequests: policy.minRequests, errorRate: policy.errorRate, cooldownMinutes: policy.cooldownMinutes };
         const fields = {
           id,
           name: account.name,
           concurrency: account.concurrency,
-          ...("concurrency" in decision ? { nextConcurrency: decision.concurrency } : {
+          ...("concurrency" in decision ? { nextConcurrency: decision.concurrency } : {}),
+          ...("priority" in decision ? { priority: account.priority, nextPriority: decision.priority } : {
             remainingUsable: decision.remainingUsable,
             minSchedulable: policy.minSchedulable,
           }),
@@ -242,21 +261,30 @@ async function run() {
         store.addDecision(record);
 
         if (event !== "floor_blocked") {
-          const nextCapacity = "concurrency" in decision ? decision.concurrency : null;
+          const concurrency = "concurrency" in decision ? decision.concurrency : account.concurrency;
           if (automaticAdmin) {
             try {
-              if (nextCapacity === null) await automaticAdmin.close(id);
-              else await automaticAdmin.setConcurrency(id, nextCapacity);
+              if (event === "close") await automaticAdmin.close(id);
+              else await automaticAdmin.updateAccount(id, {
+                concurrency,
+                ...(decision.priority !== account.priority ? { priority: decision.priority } : {}),
+              });
             } catch (error) {
               logError("admin_api", error, { id, decision: event });
               continue;
             }
           } else {
-            simulated.set(id, { concurrency: nextCapacity, actual: accountsById.get(id)! });
+            simulated.set(id, {
+              ...simulated.get(id), actual: accountsById.get(id)!,
+              ...(event === "close" ? { concurrency: null } : {
+                ...("concurrency" in decision ? { concurrency } : {}),
+                priority: decision.priority,
+              }),
+            });
           }
           state.set(id, {
             lastChangeAt: nowIso,
-            ...(event === "close" ? { closedAt: nowIso } : {}),
+            ...("priorityBump" in decision ? { priorityBump: decision.priorityBump } : { closedAt: nowIso }),
           });
         }
 
@@ -283,8 +311,55 @@ async function run() {
     return now;
   }
 
-  while (true) {
-    const now = await serialize(tick);
+  return {
+    store,
+    tick: () => serialize(tick),
+    changeAccount: ((id, change) => serialize(() => changeAccount(id, change))) satisfies ChangeAccount,
+    saveSettings: (value: Settings) => serialize(() => {
+      const { value: from } = store.getSettings();
+      const updatedAt = new Date(clock()).toISOString();
+      settings.save(value, updatedAt);
+      store.setSettings({ value, updatedAt });
+      console.log(JSON.stringify({ event: "settings", from, to: value }));
+    }),
+  };
+}
+
+async function run() {
+  const config = loadConfig();
+  const database = openDatabase(config.databaseUrl, config.groupId);
+  const admin = config.adminApiKey ? openAdminApi(config.sub2apiUrl, config.adminApiKey) : undefined;
+  const guardDb = openGuardDb(config.guardDb, config.dryRun);
+  const probe = createProbeRunner({
+    baseUrl: config.sub2apiUrl, adminApiKey: config.adminApiKey,
+    probeApiKey: config.probeApiKey, groupName: config.probeGroupName,
+  });
+  const guard = createGuard({ ...config, database, admin, guardDb, probeEnabled: probe.enabled });
+  const series = createSeries(guard.store, guardDb.decisions, database.series);
+  const dist = fileURLToPath(new URL("../web/dist/", import.meta.url));
+  let server: ReturnType<typeof startStatusServer> | undefined;
+  try {
+    server = startStatusServer(guard.store, config.webPort, config.webPassword, {
+      dist, changeAccount: guard.changeAccount, saveSettings: guard.saveSettings, series, probe,
+    });
+    log("web_server", { port: config.webPort });
+  } catch (error) {
+    logError("web_server", error, { port: config.webPort });
+  }
+
+  let stopping = false;
+  async function stop() {
+    if (stopping) return;
+    stopping = true;
+    server?.stop(true);
+    await probe.shutdown();
+    process.exit(0);
+  }
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
+
+  while (!stopping) {
+    const now = await guard.tick();
     await Bun.sleep(Math.max(0, config.tickSeconds * 1_000 - (Date.now() - now)));
   }
 }

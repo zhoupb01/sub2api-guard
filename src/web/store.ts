@@ -1,10 +1,14 @@
-import { minute, trafficStats, type AccountSample, type Decision, type Policy } from "../decide";
+import { minute, trafficStats, type AccountSample, type Decision } from "../decide";
+import type { SavedSettings } from "../guard-db";
+import { defaultSettings, maxConcurrencyFor } from "../settings";
+
+export type { SeriesResponse } from "../series";
+export type { Settings } from "../settings";
 
 export type TrafficStats = ReturnType<typeof trafficStats>;
 
 export interface TickAccount extends AccountSample {
   name: string;
-  priority: number;
   loadFactor: number | null;
   since: string;
   closed: boolean;
@@ -16,6 +20,7 @@ export interface RecordedAccount {
   name: string;
   concurrency: number;
   priority: number;
+  priorityBump: number;
   loadFactor: number | null;
   maxConcurrency: number;
   usable: boolean;
@@ -57,6 +62,9 @@ export type DecisionRecord = DecisionRecordBase & (
   | {
       event: Exclude<Decision["event"], "reopen">;
       nextConcurrency?: number;
+      // Decisions saved before priority tracking do not have these fields.
+      priority?: number;
+      nextPriority?: number;
       remainingUsable?: number;
       minSchedulable?: number;
       maxConcurrency?: number;
@@ -79,21 +87,22 @@ export interface RecordedError {
 }
 
 const decisionLimit = 200;
+type AccountRow = Omit<RecordedAccount, "maxConcurrency" | "reopenAt">;
 
 export function createStatusStore(meta: {
   groupId: number;
   dryRun: boolean;
-  policy: Policy;
+  settings?: SavedSettings;
   manualEnabled?: boolean;
+  probeEnabled?: boolean;
   decisions?: readonly DecisionRecord[];
 }) {
-  const rows = new Map<number, RecordedAccount>();
+  const rows = new Map<number, AccountRow>();
+  let settings = meta.settings ?? { value: defaultSettings, updatedAt: null };
   const decisions: DecisionRecord[] = [...(meta.decisions ?? [])].slice(0, decisionLimit);
   let lastTickAt: string | null = null;
   let lastError: RecordedError | null = null;
-  const reopenAt = (closedAt: string | null) => closedAt === null
-    ? null
-    : new Date(Date.parse(closedAt) + meta.policy.reopenMinutes * minute).toISOString();
+  const accountIds = () => [...rows.keys()].sort((left, right) => left - right);
 
   return {
     recordTick({ now, accounts }: { now: string; accounts: readonly TickAccount[] }) {
@@ -105,12 +114,11 @@ export function createStatusStore(meta: {
           name: account.name,
           concurrency: account.concurrency,
           priority: account.priority,
+          priorityBump: account.priorityBump,
           loadFactor: account.loadFactor,
-          maxConcurrency: meta.policy.maxOverrides[account.id] ?? meta.policy.maxConcurrency,
           usable: account.usable,
           closed: account.closed,
           closedAt,
-          reopenAt: reopenAt(closedAt),
           lastChangeAt: account.lastChangeAt ?? null,
           recent: { since: account.since, ...trafficStats(account.recent) },
           healthy: trafficStats(account.healthy),
@@ -124,11 +132,10 @@ export function createStatusStore(meta: {
       return rows.get(id);
     },
 
-    updateAccount(account: RecordedAccount, changes: Partial<Pick<RecordedAccount,
-      "concurrency" | "priority" | "loadFactor" | "closed" | "closedAt" | "lastChangeAt"
+    updateAccount(account: AccountRow, changes: Partial<Pick<AccountRow,
+      "concurrency" | "priority" | "priorityBump" | "loadFactor" | "closed" | "closedAt" | "lastChangeAt"
     >>) {
       const updated = { ...account, ...changes };
-      updated.reopenAt = reopenAt(updated.closedAt);
       rows.set(account.id, updated);
       return updated;
     },
@@ -142,16 +149,36 @@ export function createStatusStore(meta: {
       lastError = { ts, message };
     },
 
+    getSettings() {
+      return settings;
+    },
+
+    setSettings(saved: SavedSettings) {
+      settings = saved;
+    },
+
+    accountIds,
+
     status() {
       return {
         now: new Date().toISOString(),
         dryRun: meta.dryRun,
         manualEnabled: meta.manualEnabled ?? false,
+        probeEnabled: meta.probeEnabled ?? false,
         groupId: meta.groupId,
-        policy: meta.policy,
+        settings: settings.value,
+        settingsUpdatedAt: settings.updatedAt,
         lastTickAt,
         lastError,
-        accounts: [...rows.values()].sort((left, right) => left.id - right.id),
+        accounts: accountIds().map((id): RecordedAccount => {
+          const row = rows.get(id)!;
+          return {
+            ...row,
+            maxConcurrency: maxConcurrencyFor(settings.value, id),
+            reopenAt: row.closedAt === null ? null
+              : new Date(Date.parse(row.closedAt) + settings.value.reopenMinutes * minute).toISOString(),
+          };
+        }),
         decisions: [...decisions],
       };
     },
