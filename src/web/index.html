@@ -36,7 +36,7 @@
   }
 
   /* ---- sheet and frame --------------------------------------------------- */
-  .sheet { max-width: 1200px; margin: 0 auto; padding: 26px 24px 40px; }
+  .sheet { max-width: 1400px; margin: 0 auto; padding: 26px 24px 40px; }
   .frame {
     position: relative;
     border: 1px solid var(--rule-2);
@@ -51,10 +51,10 @@
   }
   .plate {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    justify-content: space-between;
-    gap: 14px;
-    padding: 11px 16px;
+    gap: 8px 14px;
+    padding: 11px 26px;
     border-bottom: 1px solid var(--rule-2);
   }
   .mark {
@@ -70,15 +70,27 @@
     letter-spacing: 0.1em;
     color: var(--muted);
   }
-  .plate-end { display: flex; align-items: center; gap: 16px; }
-  .stamp {
-    font: 500 10.5px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    letter-spacing: 0.12em;
-    color: var(--muted);
-    white-space: nowrap;
+  .info { display: flex; flex-wrap: wrap; align-items: baseline; }
+  .info-item { display: flex; align-items: baseline; gap: 6px; padding: 0 14px; }
+  .info-item + .info-item { border-left: 1px solid var(--rule); }
+  .info-k {
+    font: 500 9.5px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.08em;
+    color: var(--faint);
   }
-  .stamp b { color: var(--accent); font-weight: 600; }
-  .logout { display: flex; }
+  .info-v {
+    font-size: 11.5px;
+    line-height: 1.7;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .info-sub {
+    display: block;
+    font: 400 9.5px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.04em;
+    color: var(--faint);
+  }
+  .logout { display: flex; margin-left: auto; }
   .logout button {
     padding: 3px 8px;
     border: 1px solid var(--rule-2);
@@ -91,89 +103,19 @@
   .logout button:hover, .logout button:focus-visible { color: var(--accent); border-color: var(--accent); }
   .logout button:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
-  .body-grid { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 240px; }
-  .body-grid::after {
-    content: "";
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    right: 240px;
-    border-left: 1px solid var(--rule-2);
-    pointer-events: none;
-  }
-  main { min-width: 0; padding: 30px 40px 70px 26px; }
-
-  /* ---- right margin: index and title block ------------------------------- */
-  .margin {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-    height: calc(100vh - 48px);
-    padding: 16px 14px 18px;
-    position: sticky;
-    top: 24px;
-    overflow-y: auto;
-  }
-  .k {
-    margin: 0 0 8px;
-    font: 600 9.5px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    letter-spacing: 0.2em;
-    color: var(--faint);
-    text-transform: uppercase;
-  }
-  .toc ul { list-style: none; margin: 0; padding: 0; counter-reset: mark; }
-  .toc li { counter-increment: mark; }
-  .toc a {
-    display: flex;
-    gap: 8px;
-    padding: 3px 0;
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 1.5;
-    text-decoration: none;
-  }
-  .toc a::before {
-    content: counter(mark, decimal-leading-zero);
-    flex: none;
-    font: 500 9.5px/1.9 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    letter-spacing: 0.06em;
-    color: var(--faint);
-  }
-  .toc a:hover { color: var(--accent); }
-
-  .titleblock { margin-top: auto; border: 1px solid var(--rule-2); }
-  .titleblock .k { margin: 0; padding: 5px 8px; background: var(--wash); border-bottom: 1px solid var(--rule-2); }
-  .tb-row { display: grid; grid-template-columns: 58px minmax(0, 1fr); border-bottom: 1px solid var(--rule); }
-  .tb-row:last-child { border-bottom: 0; }
-  .tb-k {
-    padding: 5px 6px;
-    border-right: 1px solid var(--rule);
-    font: 500 9.5px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    letter-spacing: 0.08em;
-    color: var(--faint);
-  }
-  .tb-v { padding: 5px 8px; font-size: 11.5px; line-height: 1.7; color: var(--ink); overflow-wrap: anywhere; }
-  .tb-sub { display: block; font: 400 9.5px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.04em; color: var(--faint); }
+  /* ---- two columns ------------------------------------------------------- */
+  .columns { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
+  .col { min-width: 0; }
+  .col:first-child { padding-right: 22px; }
+  .col + .col { padding-left: 22px; border-left: 1px solid var(--rule-2); }
 
   /* ---- drawing text ------------------------------------------------------ */
-  .doc { max-width: 780px; counter-reset: sec; }
-  .doc h1 {
-    margin: 0 0 26px;
-    padding-bottom: 16px;
-    border-bottom: 1px solid var(--rule-2);
-    font-size: 29px;
-    line-height: 1.28;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    color: var(--ink);
-  }
+  .doc { counter-reset: sec; padding: 24px 26px 40px; }
   .doc h2 {
     display: flex;
     align-items: center;
     gap: 12px;
-    margin: 44px 0 14px;
-    padding-top: 16px;
-    border-top: 1px solid var(--rule);
+    margin: 0 0 14px;
     font-size: 19px;
     line-height: 1.35;
     font-weight: 650;
@@ -219,7 +161,7 @@
 
   /* ---- note -------------------------------------------------------------- */
   .note {
-    margin: 0 0 8px;
+    margin: 0 0 18px;
     padding: 11px 14px 9px;
     border: 1px solid var(--rule);
     border-left: 3px solid var(--accent);
@@ -246,7 +188,7 @@
     line-height: 1.6;
   }
   .table th {
-    padding: 7px 10px 6px;
+    padding: 7px 8px 6px;
     border-bottom: 1px solid var(--rule-2);
     background: var(--wash);
     text-align: left;
@@ -258,7 +200,7 @@
   }
   .table th.th-num { text-align: right; }
   .th-sub { display: block; font-weight: 400; font-size: 9.5px; letter-spacing: 0.08em; color: var(--faint); }
-  .table td { padding: 9px 10px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+  .table td { padding: 9px 8px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
   .table tbody tr:last-child td { border-bottom: 1px solid var(--rule-2); }
   .table .empty { padding: 14px 10px; color: var(--faint); }
   .table tr[data-attention="true"] .c-event { color: var(--accent); }
@@ -291,11 +233,11 @@
   .state[data-kind="closed"] i { background: transparent; border-color: var(--faint); }
 
   .rate { display: flex; align-items: center; gap: 9px; white-space: nowrap; }
-  .rate .figure { min-width: 42px; }
+  .rate .figure { min-width: 38px; }
   .meter {
     position: relative;
     flex: 1;
-    min-width: 60px;
+    min-width: 48px;
     height: 6px;
     border: 1px solid var(--rule-2);
     background: var(--wash);
@@ -322,35 +264,26 @@
   .is-closed .meter { border-color: var(--rule-2); }
   .is-closed .meter i { background: var(--faint); }
 
-  @media (max-width: 1199px) {
-    .body-grid { grid-template-columns: minmax(0, 1fr) 210px; }
-    .body-grid::after { right: 210px; }
-    main { padding-right: 28px; }
-    .margin { height: auto; max-height: none; }
-    .titleblock { margin-top: 0; }
+  @media (max-width: 1099px) {
+    .columns { display: block; }
+    .col:first-child { padding-right: 0; }
+    .col + .col {
+      margin-top: 26px;
+      padding-top: 20px;
+      padding-left: 0;
+      border-left: 0;
+      border-top: 1px solid var(--rule-2);
+    }
   }
   @media (max-width: 880px) {
     .sheet { padding: 12px 16px 28px; }
     .frame::before { inset: -3px; }
-    .plate { flex-wrap: wrap; gap: 6px 12px; padding: 10px 12px; }
-    .body-grid { display: flex; flex-direction: column; }
-    .body-grid::after { display: none; }
-    main { order: 1; padding: 18px 14px 40px; }
-    .margin {
-      order: 2;
-      position: static;
-      height: auto;
-      max-height: none;
-      gap: 14px;
-      padding: 14px 12px 16px;
-      border-top: 1px solid var(--rule-2);
-    }
-    .toc ul { display: flex; gap: 14px; }
-    .doc h1 { font-size: 24px; }
-    .doc h2 { font-size: 17px; margin-top: 34px; }
+    .plate { gap: 6px 12px; padding: 10px 14px; }
+    .info-item { padding: 0 10px; }
+    .doc { padding: 18px 14px 32px; }
+    .doc h2 { font-size: 17px; }
   }
   @media (max-width: 760px) {
-    .doc { max-width: none; }
     .table, .table tbody, .table tr, .table td { display: block; }
     .table thead { display: none; }
     .table tr { padding: 12px 0 11px; border-bottom: 1px solid var(--rule); }
@@ -406,22 +339,25 @@
 <div class="frame">
   <header class="plate">
     <span class="mark">SUB2API-GUARD<span>第 <b id="group">—</b> 组</span></span>
-    <div class="plate-end">
-      <span class="stamp"><b id="mode">—</b></span>
-      <form method="post" action="/logout" class="logout">
-        <button type="submit">退出</button>
-      </form>
+    <div class="info">
+      <span class="info-item"><span class="info-k">模式</span><span class="info-v" id="mode">—</span></span>
+      <span class="info-item"><span class="info-k">上次检查</span><span class="info-v" id="last-tick">—</span></span>
+      <span class="info-item"><span class="info-k">阈值</span><span class="info-v"><span id="threshold">—</span><span class="info-sub" id="threshold-sub"></span></span></span>
+      <span class="info-item"><span class="info-k">保底</span><span class="info-v" id="floor">—</span></span>
+      <span class="info-item"><span class="info-k">恢复</span><span class="info-v" id="reopen">—</span></span>
+      <span class="info-item"><span class="info-k">更新</span><span class="info-v" id="updated">正在加载…</span></span>
     </div>
+    <form method="post" action="/logout" class="logout">
+      <button type="submit">退出</button>
+    </form>
   </header>
-  <div class="body-grid">
-    <main>
-      <article class="doc">
-        <h1>账号容量</h1>
-        <div class="note" id="alert" hidden>
-          <p class="note-k">检查异常</p>
-          <p class="note-body" id="alert-body"></p>
-        </div>
-
+  <article class="doc">
+    <div class="note" id="alert" hidden>
+      <p class="note-k">检查异常</p>
+      <p class="note-body" id="alert-body"></p>
+    </div>
+    <div class="columns">
+      <section class="col">
         <h2 id="accounts"><span class="t">账号</span><i class="dim" aria-hidden="true"></i><span class="h2-note" id="account-count"></span></h2>
         <table class="table accounts">
           <thead>
@@ -436,7 +372,9 @@
           </thead>
           <tbody id="accounts-body"></tbody>
         </table>
+      </section>
 
+      <section class="col">
         <h2 id="decisions"><span class="t">决策</span><i class="dim" aria-hidden="true"></i><span class="h2-note" id="decision-count"></span></h2>
         <table class="table decisions">
           <thead>
@@ -450,27 +388,9 @@
           </thead>
           <tbody id="decisions-body"></tbody>
         </table>
-      </article>
-    </main>
-    <aside class="margin">
-      <nav class="toc" aria-label="图内索引">
-        <p class="k">图内索引</p>
-        <ul>
-          <li><a href="#accounts">账号</a></li>
-          <li><a href="#decisions">决策</a></li>
-        </ul>
-      </nav>
-      <div class="titleblock">
-        <p class="k">标题栏</p>
-        <div class="tb-row"><span class="tb-k">分组</span><span class="tb-v">第 <span id="tb-group">—</span> 组</span></div>
-        <div class="tb-row"><span class="tb-k">模式</span><span class="tb-v" id="tb-mode">—</span></div>
-        <div class="tb-row"><span class="tb-k">上次检查</span><span class="tb-v" id="last-tick">—</span></div>
-        <div class="tb-row"><span class="tb-k">阈值</span><span class="tb-v"><span id="threshold">—</span><span class="tb-sub" id="threshold-sub"></span></span></div>
-        <div class="tb-row"><span class="tb-k">保底</span><span class="tb-v" id="floor">—</span></div>
-        <div class="tb-row"><span class="tb-k">更新</span><span class="tb-v" id="updated">正在加载…</span></div>
-      </div>
-    </aside>
-  </div>
+      </section>
+    </div>
+  </article>
 </div>
 </div>
 <script>
@@ -486,18 +406,18 @@
     increase: "升容量",
     close: "关闭调度",
     floor_blocked: "保底拦截",
+    reopen: "恢复调度",
   };
   const attentionEvents = new Set(["decrease", "close", "floor_blocked"]);
 
   const nodes = {
     group: document.querySelector("#group"),
-    tbGroup: document.querySelector("#tb-group"),
     mode: document.querySelector("#mode"),
-    tbMode: document.querySelector("#tb-mode"),
     lastTick: document.querySelector("#last-tick"),
     threshold: document.querySelector("#threshold"),
     thresholdSub: document.querySelector("#threshold-sub"),
     floor: document.querySelector("#floor"),
+    reopen: document.querySelector("#reopen"),
     updated: document.querySelector("#updated"),
     alert: document.querySelector("#alert"),
     alertBody: document.querySelector("#alert-body"),
@@ -532,6 +452,7 @@
 
   const formatClock = (value) => clockFormat.format(new Date(value));
   const formatRate = (rate) => `${(rate * 100).toFixed(1)}%`;
+  const formatHours = (minutes) => String(Math.round((minutes / 60) * 10) / 10);
 
   function relativeTime(value, now) {
     if (!value) return "从未";
@@ -543,8 +464,16 @@
     return `${Math.round(hours / 24)} 天前`;
   }
 
+  function reopenLabel(reopenAt, now) {
+    if (!reopenAt) return "已关闭";
+    const minutes = Math.round((Date.parse(reopenAt) - now) / 60000);
+    if (minutes <= 0) return "已关闭 · 即将恢复";
+    if (minutes >= 60) return `已关闭 · ${Math.round(minutes / 60)} 小时后恢复`;
+    return `已关闭 · ${minutes} 分钟后恢复`;
+  }
+
   function accountState(account, policy, now) {
-    if (account.closed) return { label: "已关闭", kind: "closed" };
+    if (account.closed) return { label: reopenLabel(account.reopenAt, now), kind: "closed" };
     if (!account.usable) return { label: "暂不可用", kind: "unusable" };
     const changedAt = account.lastChangeAt ? Date.parse(account.lastChangeAt) : 0;
     if (now - changedAt < policy.cooldownMinutes * 60000) return { label: "冷却中", kind: "cooldown" };
@@ -601,19 +530,21 @@
   }
 
   function renderDecision(record) {
-    const after = record.event === "close"
-      ? "关闭"
-      : record.event === "floor_blocked" ? "保留" : String(record.nextConcurrency);
+    const reopen = record.event === "reopen";
+    const from = reopen ? "关闭" : record.concurrency;
+    const to = reopen
+      ? record.concurrency
+      : record.event === "close" ? "关闭" : record.event === "floor_blocked" ? "保留" : String(record.nextConcurrency);
     const row = h("tr", null,
       cell("c-time", null, h("time", null, formatClock(record.ts))),
       cell("c-event", null, eventLabels[record.event] ?? record.event),
       cell("c-account", null, h("span", "account-id", `#${record.id}`), h("span", "account-name", record.name)),
       cell("c-change", "容量",
-        h("b", "figure", record.concurrency),
+        h("b", "figure", from),
         h("span", "arrow", "→"),
-        after,
+        to,
       ),
-      cell("c-rate", "错误率", formatRate(record.rate)),
+      cell("c-rate", "错误率", reopen ? "—" : formatRate(record.rate)),
     );
     row.dataset.attention = String(attentionEvents.has(record.event));
     return row;
@@ -622,14 +553,13 @@
   function render(data) {
     const now = Date.parse(data.now);
     nodes.group.textContent = data.groupId;
-    nodes.tbGroup.textContent = data.groupId;
     nodes.mode.textContent = data.dryRun ? "演练" : "实跑";
-    nodes.tbMode.textContent = data.dryRun ? "演练" : "实跑";
     nodes.lastTick.textContent = data.lastTickAt ? formatClock(data.lastTickAt) : "尚未完成";
     nodes.lastTick.title = data.lastTickAt ?? "";
     nodes.threshold.textContent = formatRate(data.policy.errorRate);
     nodes.thresholdSub.textContent = `≥ ${data.policy.minRequests} 次 / ${data.policy.windowMinutes} 分钟`;
     nodes.floor.textContent = `≥ ${data.policy.minSchedulable} 个可调度`;
+    nodes.reopen.textContent = `关闭 ${formatHours(data.policy.reopenMinutes)} 小时后`;
     nodes.rateWindow.textContent = `近 ${data.policy.windowMinutes} 分钟`;
 
     if (data.lastError) {

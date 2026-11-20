@@ -1,10 +1,11 @@
-import { trafficStats, type AccountSample, type Decision, type Policy } from "../decide";
+import { minute, trafficStats, type AccountSample, type Decision, type Policy } from "../decide";
 
 export type TrafficStats = ReturnType<typeof trafficStats>;
 
 export interface TickAccount extends AccountSample {
   name: string;
   since: string;
+  closedAt?: string | null;
 }
 
 export interface RecordedAccount {
@@ -14,34 +15,46 @@ export interface RecordedAccount {
   maxConcurrency: number;
   usable: boolean;
   closed: boolean;
+  closedAt: string | null;
+  reopenAt: string | null;
   lastChangeAt: string | null;
   recent: { since: string } & TrafficStats;
   healthy: TrafficStats;
 }
 
-export interface DecisionRecord {
+interface DecisionRecordBase {
   ts: string;
-  event: Decision["event"];
   id: number;
   name: string;
   concurrency: number;
-  nextConcurrency?: number;
-  remainingUsable?: number;
-  minSchedulable?: number;
-  maxConcurrency?: number;
-  minRequests?: number;
-  errorRate?: number;
-  cooldownMinutes?: number;
-  healthyMinutes?: number;
-  healthyRate?: number;
-  errors: number;
-  successes: number;
-  total: number;
-  rate: number;
-  since: string;
   lastChangeAt: string | null;
   dryRun: boolean;
 }
+
+export type DecisionRecord = DecisionRecordBase & (
+  | {
+      event: "reopen";
+      closedAt: string;
+      reopenMinutes: number;
+    }
+  | {
+      event: Exclude<Decision["event"], "reopen">;
+      nextConcurrency?: number;
+      remainingUsable?: number;
+      minSchedulable?: number;
+      maxConcurrency?: number;
+      minRequests?: number;
+      errorRate?: number;
+      cooldownMinutes?: number;
+      healthyMinutes?: number;
+      healthyRate?: number;
+      errors: number;
+      successes: number;
+      total: number;
+      rate: number;
+      since: string;
+    }
+);
 
 export interface RecordedError {
   ts: string;
@@ -50,32 +63,37 @@ export interface RecordedError {
 
 const decisionLimit = 200;
 
-export function createStatusStore(meta: { groupId: number; dryRun: boolean; policy: Policy }) {
+export function createStatusStore(meta: {
+  groupId: number;
+  dryRun: boolean;
+  policy: Policy;
+  decisions?: readonly DecisionRecord[];
+}) {
   const rows = new Map<number, RecordedAccount>();
-  const decisions: DecisionRecord[] = [];
+  const decisions: DecisionRecord[] = [...(meta.decisions ?? [])].slice(0, decisionLimit);
   let lastTickAt: string | null = null;
   let lastError: RecordedError | null = null;
 
   return {
     recordTick({ now, accounts }: { now: string; accounts: readonly TickAccount[] }) {
-      const present = new Set<number>();
+      rows.clear();
       for (const account of accounts) {
-        present.add(account.id);
+        const closedAt = account.closedAt ?? null;
         rows.set(account.id, {
           id: account.id,
           name: account.name,
           concurrency: account.concurrency,
           maxConcurrency: meta.policy.maxOverrides[account.id] ?? meta.policy.maxConcurrency,
           usable: account.usable,
-          closed: false,
+          closed: closedAt !== null,
+          closedAt,
+          reopenAt: closedAt === null
+            ? null
+            : new Date(Date.parse(closedAt) + meta.policy.reopenMinutes * minute).toISOString(),
           lastChangeAt: account.lastChangeAt ?? null,
           recent: { since: account.since, ...trafficStats(account.recent) },
           healthy: trafficStats(account.healthy),
         });
-      }
-      // Closed accounts leave the query. Keep the ones the guard closed, drop the rest.
-      for (const [id, account] of rows) {
-        if (!present.has(id) && !account.closed) rows.delete(id);
       }
       lastTickAt = now;
       lastError = null;
@@ -84,9 +102,6 @@ export function createStatusStore(meta: { groupId: number; dryRun: boolean; poli
     addDecision(record: DecisionRecord) {
       decisions.unshift(record);
       if (decisions.length > decisionLimit) decisions.length = decisionLimit;
-      if (record.event !== "close") return;
-      const account = rows.get(record.id);
-      if (account) account.closed = true;
     },
 
     recordError(ts: string, message: string) {

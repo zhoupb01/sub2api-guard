@@ -11,6 +11,7 @@ const policy = {
   healthyMinutes: 30,
   healthyRate: 0.01,
   minSchedulable: 4,
+  reopenMinutes: 720,
   maxConcurrency: 3,
   maxOverrides: {},
 };
@@ -96,27 +97,26 @@ test("keeps the 200 newest decisions, newest first", () => {
   expect(decisions[199]?.id).toBe(6);
 });
 
-test("keeps a closed account with its last numbers until it reports again", () => {
+test("shows a closed account from fresh tick data with its reopen time", () => {
   const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  store.recordTick({ now: tickAt, accounts: [account(1)] });
-  store.addDecision(closeDecision(1));
+  store.recordTick({
+    now: tickAt,
+    accounts: [account(1, { closedAt: "2026-11-19T00:00:00.000Z" })],
+  });
 
-  store.recordTick({ now: "2026-11-19T12:01:00.000Z", accounts: [] });
-  const [closed] = store.status().accounts;
-  expect(closed).toEqual({
+  expect(store.status().accounts).toEqual([{
     id: 1,
     name: "账号 1",
     concurrency: 2,
     maxConcurrency: 3,
     usable: true,
     closed: true,
+    closedAt: "2026-11-19T00:00:00.000Z",
+    reopenAt: "2026-11-19T12:00:00.000Z",
     lastChangeAt: null,
     recent: { since: "2026-11-19T11:50:00.000Z", errors: 3, successes: 37, total: 40, rate: 0.075 },
     healthy: { errors: 1, successes: 99, total: 100, rate: 0.01 },
-  });
-
-  store.recordTick({ now: "2026-11-19T12:02:00.000Z", accounts: [account(1)] });
-  expect(store.status().accounts[0]?.closed).toBe(false);
+  }]);
 });
 
 test("logs in with the shared password and sets the signed session cookie for 30 days", async () => {
@@ -136,7 +136,7 @@ test("logs in with the shared password and sets the signed session cookie for 30
 
 test("serves the snapshot at /api/status", async () => {
   const store = createStatusStore({ groupId: 34, dryRun: false, policy: { ...policy, maxOverrides: { "7": 2 } } });
-  store.recordTick({ now: tickAt, accounts: [account(1), account(7, { concurrency: 1 })] });
+  store.recordTick({ now: tickAt, accounts: [account(1, { closedAt: "2026-11-19T00:00:00.000Z" }), account(7, { concurrency: 1 })] });
   store.addDecision(closeDecision(1));
 
   const server = startStatusServer(store, 0, webPassword, () => tickTime);
@@ -161,6 +161,8 @@ test("serves the snapshot at /api/status", async () => {
       maxConcurrency: 3,
       usable: true,
       closed: true,
+      closedAt: "2026-11-19T00:00:00.000Z",
+      reopenAt: "2026-11-19T12:00:00.000Z",
       lastChangeAt: null,
       recent: { since: "2026-11-19T11:50:00.000Z", errors: 3, successes: 37, total: 40, rate: 0.075 },
       healthy: { errors: 1, successes: 99, total: 100, rate: 0.01 },

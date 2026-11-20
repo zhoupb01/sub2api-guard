@@ -5,6 +5,7 @@ export const noChange = "1970-01-01T00:00:00.000Z";
 
 interface Entry {
   lastChangeAt: string;
+  closedAt?: string;
   lastFloorPushAt?: string;
 }
 

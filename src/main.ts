@@ -1,11 +1,12 @@
 import { sendBark } from "./bark";
 import { loadConfig } from "./config";
 import { openDatabase } from "./db";
-import { decide, minute, recentSince, trafficStats } from "./decide";
+import { appendDecision, loadDecisions } from "./decision-log";
+import { decide, decideReopens, minute, recentSince, trafficStats } from "./decide";
 import { noChange, openState } from "./state";
 import { openAdminApi } from "./sub2api";
 import { startStatusServer } from "./web/server";
-import { createStatusStore } from "./web/store";
+import { createStatusStore, type DecisionRecord } from "./web/store";
 
 function log(event: string, fields: Record<string, unknown>) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
@@ -20,11 +21,12 @@ async function run() {
   const { policy, dryRun, barkUrl } = config;
   const database = openDatabase(config.databaseUrl, config.groupId, config.errorPatterns);
   const admin = dryRun ? undefined : openAdminApi(config.sub2apiUrl, config.adminApiKey);
+  const initialDecisions = await loadDecisions(config.decisionLog, dryRun);
   const lastSummaryAt = new Map<number, number>();
-  // A simulated close uses null and stays out of the account list for this run.
+  // A simulated close uses null and stays out of the open account list for this run.
   const simulated = new Map<number, number | null>();
   let loadedState: Awaited<ReturnType<typeof openState>> | undefined;
-  const store = createStatusStore({ groupId: config.groupId, dryRun, policy });
+  const store = createStatusStore({ groupId: config.groupId, dryRun, policy, decisions: initialDecisions });
   try {
     startStatusServer(store, config.webPort, config.webPassword);
     log("web_server", { port: config.webPort });
@@ -39,12 +41,32 @@ async function run() {
       const state = loadedState ??= await openState(config.stateFile);
       await state.flush();
 
-      const accounts = (await database.accounts(nowIso)).filter((account) => simulated.get(account.id) !== null);
-      const snapshots = accounts.map((account) => {
+      const databaseAccounts = await database.accounts(nowIso);
+      const openAccounts = databaseAccounts.filter((account) => simulated.get(account.id) !== null);
+      for (const account of openAccounts) {
+        if (state.get(account.id)?.closedAt !== undefined) await state.set(account.id, { closedAt: undefined });
+      }
+      const closedAccounts = dryRun
+        ? databaseAccounts.filter((account) => simulated.get(account.id) === null && state.get(account.id)?.closedAt !== undefined)
+        : (await database.closedAccounts(nowIso)).filter((account) => state.get(account.id)?.closedAt !== undefined);
+      const accountData = [
+        ...openAccounts.map((account) => ({ ...account, closed: false, closedAt: null as string | null })),
+        ...closedAccounts.map((account) => ({
+          ...account,
+          closed: true,
+          closedAt: state.get(account.id)?.closedAt ?? null,
+        })),
+      ];
+      const snapshots = accountData.map((account) => {
         const recordedChangeAt = state.get(account.id)?.lastChangeAt;
         const lastChangeAt = recordedChangeAt === noChange ? undefined : recordedChangeAt;
         const since = new Date(recentSince(now, lastChangeAt, policy.windowMinutes)).toISOString();
-        return { ...account, concurrency: simulated.get(account.id) ?? account.concurrency, lastChangeAt, since };
+        return {
+          ...account,
+          concurrency: simulated.get(account.id) ?? account.concurrency,
+          lastChangeAt,
+          since,
+        };
       });
       const healthySince = new Date(now - policy.healthyMinutes * minute).toISOString();
       const windows = snapshots.map(({ id, since }) => ({ account_id: id, since }));
@@ -69,7 +91,52 @@ async function run() {
         }
       }
 
-      for (const decision of decide(now, samples, policy)) {
+      const reopenCandidates = samples
+        .filter((account) => account.closed && account.closedAt !== null)
+        .map((account) => ({ id: account.id, closedAt: account.closedAt! }));
+      for (const decision of decideReopens(now, reopenCandidates, policy.reopenMinutes)) {
+        const account = samplesById.get(decision.accountId)!;
+        const fields = {
+          id: account.id,
+          name: account.name,
+          concurrency: account.concurrency,
+          closedAt: decision.closedAt,
+          reopenMinutes: policy.reopenMinutes,
+          lastChangeAt: account.lastChangeAt ?? null,
+          dryRun,
+        };
+        log("reopen", fields);
+        const record: DecisionRecord = { ts: nowIso, event: "reopen", ...fields };
+        await appendDecision(config.decisionLog, record);
+        store.addDecision(record);
+
+        if (admin) {
+          try {
+            await admin.setSchedulable(account.id, true);
+          } catch (error) {
+            logError("admin_api", error, { id: account.id, decision: "reopen" });
+            continue;
+          }
+        } else {
+          simulated.delete(account.id);
+        }
+        await state.set(account.id, { lastChangeAt: nowIso, closedAt: undefined });
+
+        if (dryRun || !barkUrl) continue;
+        const hours = String(policy.reopenMinutes / 60);
+        try {
+          await sendBark(
+            barkUrl,
+            `恢复调度 #${account.id} ${account.name}`,
+            `关闭 ${hours} 小时后自动恢复，容量 ${account.concurrency}`,
+          );
+        } catch (error) {
+          logError("bark", error, { id: account.id, decision: "reopen" });
+        }
+      }
+
+      const openSamples = samples.filter((account) => !account.closed);
+      for (const decision of decide(now, openSamples, policy)) {
         const { accountId: id, event } = decision;
         const account = samplesById.get(id)!;
         const since = event === "increase" ? healthySince : account.since;
@@ -92,7 +159,9 @@ async function run() {
           dryRun,
         };
         log(event, fields);
-        store.addDecision({ ts: nowIso, event, ...fields });
+        const record: DecisionRecord = { ts: nowIso, event, ...fields };
+        await appendDecision(config.decisionLog, record);
+        store.addDecision(record);
 
         if (event !== "floor_blocked") {
           const nextCapacity = "concurrency" in decision ? decision.concurrency : null;
@@ -107,7 +176,10 @@ async function run() {
           } else {
             simulated.set(id, nextCapacity);
           }
-          await state.set(id, { lastChangeAt: nowIso });
+          await state.set(id, {
+            lastChangeAt: nowIso,
+            ...(event === "close" ? { closedAt: nowIso } : {}),
+          });
         }
 
         if (dryRun || !barkUrl || (event !== "close" && event !== "floor_blocked")) continue;

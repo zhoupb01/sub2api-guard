@@ -6,6 +6,7 @@ export interface Policy {
   healthyMinutes: number;
   healthyRate: number;
   minSchedulable: number;
+  reopenMinutes: number;
   maxConcurrency: number;
   maxOverrides: Record<string, number>;
 }
@@ -24,10 +25,16 @@ export interface AccountSample {
   healthy: Traffic;
 }
 
+export interface ReopenCandidate {
+  id: number;
+  closedAt?: string;
+}
+
 export type Decision = { accountId: number } & (
   | { event: "decrease"; concurrency: number }
   | { event: "increase"; concurrency: number; maxConcurrency: number }
   | { event: "close" | "floor_blocked"; remainingUsable: number }
+  | { event: "reopen"; closedAt: string }
 );
 
 export const minute = 60_000;
@@ -42,8 +49,25 @@ export function trafficStats({ errors, successes }: Traffic) {
   return { errors, successes, total, rate: total === 0 ? 0 : errors / total };
 }
 
-export function decide(now: number, samples: readonly AccountSample[], policy: Policy): Decision[] {
-  const decisions: Decision[] = [];
+export type AdjustmentDecision = Exclude<Decision, { event: "reopen" }>;
+export type ReopenDecision = Extract<Decision, { event: "reopen" }>;
+
+export function decideReopens(
+  now: number,
+  candidates: readonly ReopenCandidate[],
+  reopenMinutes: number,
+): ReopenDecision[] {
+  const decisions: ReopenDecision[] = [];
+  for (const candidate of candidates) {
+    if (candidate.closedAt !== undefined && now - Date.parse(candidate.closedAt) >= reopenMinutes * minute) {
+      decisions.push({ accountId: candidate.id, event: "reopen", closedAt: candidate.closedAt });
+    }
+  }
+  return decisions;
+}
+
+export function decide(now: number, samples: readonly AccountSample[], policy: Policy): AdjustmentDecision[] {
+  const decisions: AdjustmentDecision[] = [];
   const usableAccounts = samples.filter((account) => account.usable).length;
   let closePlanned = false;
   for (const account of samples) {

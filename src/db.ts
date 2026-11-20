@@ -40,6 +40,23 @@ export function openDatabase(url: string, groupId: number, errorPatterns: string
       return rows.map((row) => ({ ...row, id: Number(row.id) }));
     },
 
+    async closedAccounts(now: string): Promise<Account[]> {
+      const rows = await sql<Account[]>`
+        SELECT a.id, a.name, a.concurrency,
+               COALESCE(GREATEST(a.temp_unschedulable_until, a.rate_limit_reset_at, a.overload_until)
+                        <= ${now}::timestamptz, true) AS usable
+        FROM accounts AS a
+        JOIN account_groups AS ag ON ag.account_id = a.id
+        WHERE ag.group_id = ${groupId}
+          AND a.deleted_at IS NULL
+          AND a.parent_account_id IS NULL
+          AND a.status = 'active'
+          AND a.schedulable = false
+        ORDER BY a.id
+      `;
+      return rows.map((row) => ({ ...row, id: Number(row.id) }));
+    },
+
     async traffic(windows: AccountWindow[], healthySince: string, now: string) {
       // Bind JSON strings as text so Bun does not encode them as JSON strings again.
       const accountWindows = JSON.stringify(windows);

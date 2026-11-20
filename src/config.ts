@@ -14,6 +14,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     dryRun,
     barkUrl: env.BARK_URL,
     stateFile: env.STATE_FILE ?? "/data/state.json",
+    decisionLog: env.DECISION_LOG ?? "/data/decisions.jsonl",
     webPort: Number(env.WEB_PORT ?? 8080),
     webPassword: env.WEB_PASSWORD ?? "",
     errorPatterns: JSON.parse(env.ERROR_PATTERNS ?? '["overloaded","Concurrency limit exceeded for account"]') as string[],
@@ -27,6 +28,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
       healthyMinutes: Number(env.HEALTHY_MIN ?? 30),
       healthyRate: Number(env.HEALTHY_RATE ?? 0.01),
       minSchedulable: Number(env.MIN_SCHEDULABLE ?? 4),
+      reopenMinutes: Number(env.REOPEN_MIN ?? 720),
     },
   };
 }

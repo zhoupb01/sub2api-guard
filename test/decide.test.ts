@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { decide, recentSince, type AccountSample } from "../src/decide";
+import { decide, decideReopens, recentSince, type AccountSample } from "../src/decide";
 
 const now = Date.parse("2026-11-19T12:00:00Z");
 const policy = {
@@ -10,6 +10,7 @@ const policy = {
   healthyMinutes: 30,
   healthyRate: 0.01,
   minSchedulable: 4,
+  reopenMinutes: 720,
   maxConcurrency: 3,
   maxOverrides: {},
 };
@@ -29,6 +30,22 @@ test("decreases capacity by one at the request and error-rate thresholds", () =>
   expect(decide(now, [sample(150)], policy)).toEqual([
     { accountId: 150, event: "decrease", concurrency: 2 },
   ]);
+});
+
+test("reopens a guard-closed account at the exact due boundary", () => {
+  const closedAt = "2026-11-19T00:00:00Z";
+  expect(decideReopens(now, [{ id: 150, closedAt }], policy.reopenMinutes)).toEqual([
+    { accountId: 150, event: "reopen", closedAt },
+  ]);
+});
+
+test("does not reopen an account before its due time", () => {
+  const closedAt = "2026-11-19T00:01:00Z";
+  expect(decideReopens(now, [{ id: 150, closedAt }], policy.reopenMinutes)).toEqual([]);
+});
+
+test("does not reopen an account without a recorded close", () => {
+  expect(decideReopens(now, [{ id: 150 }], policy.reopenMinutes)).toEqual([]);
 });
 
 test("closes a bad account at capacity one when four usable accounts remain", () => {
