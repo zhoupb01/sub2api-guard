@@ -2,14 +2,14 @@
 # On the Mac: build the image and push it to the Aliyun registry.
 # The server only pulls it: docker compose pull && docker compose up -d
 #
-# Usage: ./deploy/push.sh [tag]      # tag defaults to $IMAGE_TAG or "latest"
+# Usage: REGISTRY=registry.example.com/you ./deploy/push.sh [tag]   # tag defaults to $IMAGE_TAG or "latest"
 #
-# Prerequisite (once): docker login registry.cn-hangzhou.aliyuncs.com
+# Prerequisite (once): docker login <your registry host>
 set -euo pipefail
 
 cd "$(dirname "$0")/.."   # project root
 
-registry="${REGISTRY:-registry.cn-hangzhou.aliyuncs.com/zhoupb}"
+registry="${REGISTRY:?set REGISTRY, e.g. registry.example.com/you}"
 tag="${1:-${IMAGE_TAG:-latest}}"
 platform="${DOCKER_PLATFORM:-linux/amd64}"
 image="${registry}/sub2api-guard:${tag}"

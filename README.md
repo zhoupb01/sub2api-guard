@@ -1,3 +1,5 @@
+<img src="web/src/icon.png" width="96" alt="">
+
 # sub2api-guard
 
 定时检查 sub2api 第 34 组账号，默认每分钟一次。只读 PostgreSQL，通过 sub2api v0.2.23 管理 API 调整容量、优先级和调度。
@@ -11,9 +13,9 @@
 
 ## 部署
 
-在已运行 sub2api 和 Traefik 的服务器上，将仓库放在独立目录。Compose 加入已有的 `sub2api-deploy_sub2api-network` 和 `proxy` 网络，不发布宿主机端口。将 `sub2api-guard.zhoupb.com` 的 DNS 指向 Traefik 所在的服务器。
+在已运行 sub2api 和 Traefik 的服务器上，将仓库放在独立目录。Compose 加入已有的 `sub2api-deploy_sub2api-network` 和 `proxy` 网络，不发布宿主机端口。在 `.env` 设置状态页域名 `GUARD_HOST`，并将它的 DNS 指向 Traefik 所在的服务器。
 
-在 `.env` 设置共享密码 `WEB_PASSWORD`，然后访问 <https://sub2api-guard.zhoupb.com> 登录。会话有效期为 30 天。更换密码并重建容器后，所有人都需要重新登录。密码留空时，状态页不启动，守护循环继续运行。
+在 `.env` 设置共享密码 `WEB_PASSWORD`，然后访问 `https://<GUARD_HOST>` 登录。会话有效期为 30 天。更换密码并重建容器后，所有人都需要重新登录。密码留空时，状态页不启动，守护循环继续运行。
 
 ```sh
 cp .env.example .env
@@ -21,13 +23,13 @@ cp .env.example .env
 
 编辑 `.env`，设置 `DATABASE_URL`，例如 `postgres://guard:密码@sub2api-postgres:5432/sub2api`。建议使用只授予所需表 SELECT 权限的用户。阈值、错误匹配词、检查间隔、Bark URL 和测试分组名在状态页的设置里修改，保存在 `GUARD_DB`，演练和实跑共用。检查间隔可设为 10 至 3600 秒，保存后按上一轮开始时间重算下一轮。升级后，请在状态页填入原来通过环境变量设置的自定义值，例如原 `MAX_OVERRIDES` 和 `ERROR_PATTERNS` 的内容。
 
-镜像在 Mac 上构建，推送到阿里云镜像仓库，服务器只拉取，不构建。
+镜像在本机构建，推送到自己的镜像仓库，服务器只拉取，不构建。在 `.env` 设置仓库路径 `REGISTRY`，例如 `registry.cn-hangzhou.aliyuncs.com/你的命名空间`。
 
-在 Mac 上，首次先登录仓库，然后构建并推送。默认标签是 `latest`，也可以写 `./deploy/push.sh v1`。默认构建 `linux/amd64`，服务器是 ARM 时设置 `DOCKER_PLATFORM=linux/arm64`。
+在本机，首次先登录仓库，然后用同一个 `REGISTRY` 构建并推送。默认标签是 `latest`，也可以写 `./deploy/push.sh v1`。默认构建 `linux/amd64`，服务器是 ARM 时设置 `DOCKER_PLATFORM=linux/arm64`。
 
 ```sh
 docker login registry.cn-hangzhou.aliyuncs.com
-./deploy/push.sh
+REGISTRY=registry.cn-hangzhou.aliyuncs.com/你的命名空间 ./deploy/push.sh
 ```
 
 服务器只需要 `docker-compose.yml`、`.env` 和 `data/`。首次也要 `docker login`，然后拉取并启动。推送了非 `latest` 的标签时，在服务器的 `.env` 设置相同的 `IMAGE_TAG`。
@@ -59,3 +61,7 @@ docker compose exec sub2api-guard bun run src/probe.ts --model gpt-6.1-sol --pro
 ```
 
 脚本按顺序测试账号，用完后恢复原调度状态和分组。一次只运行一个测试进程。支持 `--repeat n`，默认每个账号请求一次。也可以把提示词放在 `./data/prompt.txt`，用 `--prompt-file /data/prompt.txt` 代替 `--prompt`。测试无需 `DATABASE_URL`，适用于按分组调度的标准模式和默认的 1 秒调度轮询间隔。
+
+## 许可
+
+[MIT](LICENSE)
