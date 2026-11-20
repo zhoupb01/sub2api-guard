@@ -21,14 +21,26 @@ cp .env.example .env
 
 编辑 `.env`，设置 `DATABASE_URL`，例如 `postgres://guard:密码@sub2api-postgres:5432/sub2api`。建议使用只授予所需表 SELECT 权限的用户。所有阈值及默认值见 `.env.example`。
 
+镜像在 Mac 上构建，推送到阿里云镜像仓库，服务器只拉取，不构建。
+
+在 Mac 上，首次先登录仓库，然后构建并推送。默认标签是 `latest`，也可以写 `./deploy/push.sh v1`。默认构建 `linux/amd64`，服务器是 ARM 时设置 `DOCKER_PLATFORM=linux/arm64`。
+
 ```sh
-docker compose up -d --build
+docker login registry.cn-hangzhou.aliyuncs.com
+./deploy/push.sh
+```
+
+服务器只需要 `docker-compose.yml`、`.env` 和 `data/`。首次也要 `docker login`，然后拉取并启动。推送了非 `latest` 的标签时，在服务器的 `.env` 设置相同的 `IMAGE_TAG`。
+
+```sh
+docker compose pull
+docker compose up -d
 docker compose logs -f sub2api-guard
 ```
 
 默认 `DRY_RUN=1`，记录决策和调整时间，模拟容量与调度变化，不调用 API 或 Bark。模拟的容量与调度在进程重启时从数据库重新读取，调整时间仍留在状态文件里。
 
-确认日志后，在 sub2api 管理后台 → 设置 → Admin API Key 获取密钥。将 `ADMIN_API_KEY` 填入 `.env`，把 `DRY_RUN` 改为 `0`，并将 `STATE_FILE` 改为 `/data/live-state.json`，让实跑使用独立的调整记录。再运行 `docker compose up -d`。
+确认日志后，在 sub2api 管理后台 → 设置 → Admin API Key 获取密钥。将 `ADMIN_API_KEY` 填入 `.env`，把 `DRY_RUN` 改为 `0`，并将 `STATE_FILE` 改为 `/data/live-state.json`，让实跑使用独立的调整记录。再在服务器运行 `docker compose up -d`。
 
 ## 测试单个账号
 

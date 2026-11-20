@@ -1,6 +1,6 @@
 services:
   sub2api-guard:
-    build: .
+    image: ${REGISTRY:-registry.cn-hangzhou.aliyuncs.com/zhoupb}/sub2api-guard:${IMAGE_TAG:-latest}
     restart: unless-stopped
     env_file: .env
     labels:
