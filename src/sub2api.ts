@@ -26,7 +26,12 @@ export function openAdminApi(baseUrl: string, apiKey: string) {
     return envelope.data;
   }
 
-  async function updateAccount(id: number, changes: { concurrency: number } | { group_ids: number[] }) {
+  async function updateAccount(id: number, changes:
+    | { concurrency: number }
+    | { priority: number }
+    | { load_factor: number }
+    | { group_ids: number[] },
+  ) {
     // The individual PUT can rewrite account extra even when it is omitted.
     const result = await request<{ success_ids?: number[] }>("POST", "/accounts/bulk-update", {
       account_ids: [id], ...changes,
@@ -48,6 +53,7 @@ export function openAdminApi(baseUrl: string, apiKey: string) {
   }
 
   return {
+    updateAccount,
     setConcurrency: (id: number, concurrency: number) => updateAccount(id, { concurrency }),
     close: (id: number) => setSchedulable(id, false),
     setSchedulable,

@@ -36,7 +36,7 @@
   }
 
   /* ---- sheet and frame --------------------------------------------------- */
-  .sheet { max-width: 1400px; margin: 0 auto; padding: 26px 24px 40px; }
+  .sheet { max-width: 1240px; margin: 0 auto; padding: 26px 24px 40px; }
   .frame {
     position: relative;
     border: 1px solid var(--rule-2);
@@ -91,23 +91,25 @@
     color: var(--faint);
   }
   .logout { display: flex; margin-left: auto; }
-  .logout button {
+  .btn {
     padding: 3px 8px;
     border: 1px solid var(--rule-2);
     background: transparent;
     color: var(--muted);
     font: 500 10.5px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     letter-spacing: 0.12em;
+    white-space: nowrap;
     cursor: pointer;
   }
-  .logout button:hover, .logout button:focus-visible { color: var(--accent); border-color: var(--accent); }
-  .logout button:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+  .btn:hover, .btn:focus-visible { color: var(--accent); border-color: var(--accent); }
+  .btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+  .btn.primary { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .btn.primary:hover, .btn.primary:focus-visible { color: #fff; background: #1a44e0; }
+  .btn[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); background: var(--wash); }
+  .btn:disabled { color: var(--faint); border-color: var(--rule); background: transparent; cursor: default; }
 
-  /* ---- two columns ------------------------------------------------------- */
-  .columns { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
-  .col { min-width: 0; }
-  .col:first-child { padding-right: 22px; }
-  .col + .col { padding-left: 22px; border-left: 1px solid var(--rule-2); }
+  /* ---- sections ---------------------------------------------------------- */
+  .section + .section { margin-top: 34px; padding-top: 22px; border-top: 1px solid var(--rule-2); }
 
   /* ---- drawing text ------------------------------------------------------ */
   .doc { counter-reset: sec; padding: 24px 26px 40px; }
@@ -264,17 +266,45 @@
   .is-closed .meter { border-color: var(--rule-2); }
   .is-closed .meter i { background: var(--faint); }
 
-  @media (max-width: 1099px) {
-    .columns { display: block; }
-    .col:first-child { padding-right: 0; }
-    .col + .col {
-      margin-top: 26px;
-      padding-top: 20px;
-      padding-left: 0;
-      border-left: 0;
-      border-top: 1px solid var(--rule-2);
-    }
+  .c-num { font-size: 12.5px; white-space: nowrap; }
+  .c-num .unset { color: var(--faint); }
+  .c-action { text-align: right; }
+
+  /* ---- manual editor ----------------------------------------------------- */
+  .accounts tr.is-editing td { border-bottom-color: transparent; }
+  .accounts tr.editor td { padding: 0 8px 14px; background: transparent; }
+  .editor-box {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 12px 18px;
+    padding: 12px 14px;
+    border: 1px solid var(--rule-2);
+    border-left: 3px solid var(--accent);
+    background: #fbfcff;
   }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .field-k {
+    font: 600 9.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.14em;
+    color: var(--faint);
+  }
+  .field input {
+    width: 92px;
+    padding: 3px 7px;
+    border: 1px solid var(--rule-2);
+    background: #fff;
+    color: var(--ink);
+    font: 500 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .field input:focus { outline: 1px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
+  .field input::placeholder { color: var(--faint); }
+  .editor-actions { display: flex; gap: 8px; align-items: center; }
+  .editor-split { align-self: stretch; width: 1px; background: var(--rule); }
+  .editor-msg { flex-basis: 100%; margin: 0; font-size: 12px; color: var(--muted); min-height: 1.6em; }
+  .editor-msg[data-kind="error"] { color: #c0312b; }
+  .editor-msg[data-kind="ok"] { color: var(--accent); }
+
   @media (max-width: 880px) {
     .sheet { padding: 12px 16px 28px; }
     .frame::before { inset: -3px; }
@@ -288,7 +318,7 @@
     .table thead { display: none; }
     .table tr { padding: 12px 0 11px; border-bottom: 1px solid var(--rule); }
     .table tbody tr:last-child { border-bottom: 1px solid var(--rule-2); }
-    .table td { border: 0; padding: 0; }
+    .table td, .table tbody tr:last-child td { border: 0; padding: 0; }
     .table td[data-label]::before {
       content: attr(data-label);
       display: block;
@@ -303,8 +333,9 @@
       grid-template-areas:
         "account state"
         "capacity errors"
+        "priority load"
         "rate rate"
-        "changed changed";
+        "changed action";
       align-items: baseline;
       gap: 8px 12px;
     }
@@ -312,8 +343,16 @@
     .c-state { grid-area: state; justify-self: end; }
     .c-capacity { grid-area: capacity; }
     .c-errors { grid-area: errors; justify-self: end; }
+    .c-priority { grid-area: priority; }
+    .c-load { grid-area: load; justify-self: end; text-align: right; }
     .c-rate { grid-area: rate; }
     .c-changed { grid-area: changed; }
+    .c-action { grid-area: action; justify-self: end; align-self: center; }
+    .accounts tr.editor { display: block; padding: 0 0 14px; }
+    .accounts tr.editor td { padding: 0; }
+    .accounts tr.is-editing { border-bottom: 0; }
+    .field input { width: 120px; }
+    .editor-split { display: none; }
     .decisions tr {
       display: grid;
       grid-template-columns: auto minmax(0, 1fr);
@@ -348,7 +387,7 @@
       <span class="info-item"><span class="info-k">更新</span><span class="info-v" id="updated">正在加载…</span></span>
     </div>
     <form method="post" action="/logout" class="logout">
-      <button type="submit">退出</button>
+      <button type="submit" class="btn">退出</button>
     </form>
   </header>
   <article class="doc">
@@ -356,40 +395,41 @@
       <p class="note-k">检查异常</p>
       <p class="note-body" id="alert-body"></p>
     </div>
-    <div class="columns">
-      <section class="col">
-        <h2 id="accounts"><span class="t">账号</span><i class="dim" aria-hidden="true"></i><span class="h2-note" id="account-count"></span></h2>
-        <table class="table accounts">
-          <thead>
-            <tr>
-              <th>账号</th>
-              <th>容量</th>
-              <th>状态</th>
-              <th>错误率<span class="th-sub" id="rate-window"></span></th>
-              <th>错误 / 总数</th>
-              <th>上次调整</th>
-            </tr>
-          </thead>
-          <tbody id="accounts-body"></tbody>
-        </table>
-      </section>
+    <section class="section">
+      <h2 id="accounts"><span class="t">账号</span><i class="dim" aria-hidden="true"></i><span class="h2-note" id="account-count"></span></h2>
+      <table class="table accounts">
+        <thead>
+          <tr>
+            <th>账号</th>
+            <th>容量</th>
+            <th>优先级</th>
+            <th>负载因子</th>
+            <th>状态</th>
+            <th>错误率<span class="th-sub" id="rate-window"></span></th>
+            <th>错误 / 总数</th>
+            <th>上次调整</th>
+            <th class="th-num">操作</th>
+          </tr>
+        </thead>
+        <tbody id="accounts-body"></tbody>
+      </table>
+    </section>
 
-      <section class="col">
-        <h2 id="decisions"><span class="t">决策</span><i class="dim" aria-hidden="true"></i><span class="h2-note" id="decision-count"></span></h2>
-        <table class="table decisions">
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>事件</th>
-              <th>账号</th>
-              <th>容量</th>
-              <th class="th-num">错误率</th>
-            </tr>
-          </thead>
-          <tbody id="decisions-body"></tbody>
-        </table>
-      </section>
-    </div>
+    <section class="section">
+      <h2 id="decisions"><span class="t">决策</span><i class="dim" aria-hidden="true"></i><span class="h2-note" id="decision-count"></span></h2>
+      <table class="table decisions">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>事件</th>
+            <th>账号</th>
+            <th>变化</th>
+            <th class="th-num">错误率</th>
+          </tr>
+        </thead>
+        <tbody id="decisions-body"></tbody>
+      </table>
+    </section>
   </article>
 </div>
 </div>
@@ -407,8 +447,15 @@
     close: "关闭调度",
     floor_blocked: "保底拦截",
     reopen: "恢复调度",
+    manual: "手动调整",
   };
   const attentionEvents = new Set(["decrease", "close", "floor_blocked"]);
+  const fieldLabels = {
+    concurrency: "并发数",
+    priority: "优先级",
+    loadFactor: "负载因子",
+    schedulable: "调度",
+  };
 
   const nodes = {
     group: document.querySelector("#group"),
@@ -465,7 +512,7 @@
   }
 
   function reopenLabel(reopenAt, now) {
-    if (!reopenAt) return "已关闭";
+    if (!reopenAt) return "手动关闭";
     const minutes = Math.round((Date.parse(reopenAt) - now) / 60000);
     if (minutes <= 0) return "已关闭 · 即将恢复";
     if (minutes >= 60) return `已关闭 · ${Math.round(minutes / 60)} 小时后恢复`;
@@ -499,12 +546,26 @@
     return blocks;
   }
 
-  function renderAccount(account, policy, now) {
+  function actionCell(account, manualEnabled) {
+    if (!manualEnabled) {
+      const off = h("span", "quiet", "—");
+      off.title = "没有设置 ADMIN_API_KEY，不能手动调整";
+      return cell("c-action", null, off);
+    }
+    const button = h("button", "btn", "调整");
+    button.type = "button";
+    button.setAttribute("aria-expanded", String(editor?.id === account.id));
+    button.addEventListener("click", () => toggleEditor(account));
+    return cell("c-action", null, button);
+  }
+
+  function renderAccount(account, policy, now, manualEnabled) {
     const state = accountState(account, policy, now);
     const stateNode = h("span", "state", h("i"), state.label);
     stateNode.dataset.kind = state.kind;
+    const classes = [account.closed && "is-closed", editor?.id === account.id && "is-editing"].filter(Boolean);
 
-    return h("tr", account.closed ? "is-closed" : null,
+    return h("tr", classes.join(" ") || null,
       cell("c-account", null,
         h("span", "account-name", account.name),
         h("span", "account-id", `#${account.id}`),
@@ -514,6 +575,10 @@
           capacityBlocks(account),
           h("span", "of", h("b", "figure", account.concurrency), ` / ${account.maxConcurrency}`),
         ),
+      ),
+      cell("c-num c-priority", "优先级", h("b", "figure", account.priority)),
+      cell("c-num c-load", "负载因子",
+        account.loadFactor === null ? h("span", "unset", "默认") : h("b", "figure", account.loadFactor),
       ),
       cell("c-state", null, stateNode),
       cell("c-rate", "错误率",
@@ -526,31 +591,177 @@
         h("span", "tally", h("b", "figure", account.recent.errors), ` / ${account.recent.total}`),
       ),
       cell("c-changed", "上次调整", h("span", "quiet", relativeTime(account.lastChangeAt, now))),
+      actionCell(account, manualEnabled),
     );
   }
 
+  // ---- manual editor --------------------------------------------------------
+  // The editor row is built once per opened account and re-attached on every refresh,
+  // so typed values survive the 15-second re-render.
+  let editor = null;
+  let latest = null;
+
+  const numberFields = ["concurrency", "loadFactor", "priority"];
+
+  function formatValue(field, value) {
+    if (field === "schedulable") return value ? "开" : "关";
+    if (field === "loadFactor" && value === null) return "默认";
+    return String(value);
+  }
+
+  async function postChange(id, change) {
+    const response = await fetch(`/api/accounts/${id}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(change),
+    });
+    if (response.status === 401) {
+      location.reload();
+      return;
+    }
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+  }
+
+  function buildEditor(account) {
+    const inputs = {};
+    const fields = numberFields.map((field) => {
+      const input = h("input");
+      input.type = "number";
+      input.inputMode = "numeric";
+      input.step = "1";
+      input.min = field === "priority" ? "0" : "1";
+      if (field === "loadFactor") {
+        input.max = "10000";
+        input.placeholder = "默认";
+      }
+      input.value = account[field] === null ? "" : String(account[field]);
+      inputs[field] = input;
+      const label = h("label", "field", h("span", "field-k", fieldLabels[field]), input);
+      return label;
+    });
+
+    const save = h("button", "btn primary", "保存");
+    save.type = "button";
+    const close = h("button", "btn", "收起");
+    close.type = "button";
+    const toggle = h("button", "btn");
+    toggle.type = "button";
+    const message = h("p", "editor-msg");
+
+    const box = h("div", "editor-box",
+      ...fields,
+      h("div", "editor-actions", save, close),
+      h("i", "editor-split"),
+      h("div", "editor-actions", toggle),
+      message,
+    );
+    const td = h("td", null, box);
+    td.colSpan = 9;
+    const row = h("tr", "editor", td);
+
+    const state = { id: account.id, row, account, initial: { ...account } };
+
+    function say(text, kind) {
+      message.textContent = text;
+      if (kind) message.dataset.kind = kind;
+      else delete message.dataset.kind;
+    }
+
+    function busy(on) {
+      for (const button of [save, toggle]) button.disabled = on;
+    }
+
+    async function apply(changes) {
+      busy(true);
+      say("正在保存…");
+      try {
+        for (const [field, value] of changes) {
+          try {
+            await postChange(state.id, { [field]: value });
+          } catch (error) {
+            throw new Error(`${fieldLabels[field]}：${error.message}`);
+          }
+          state.initial[field] = value;
+        }
+        say("已保存", "ok");
+        await refresh();
+      } catch (error) {
+        say(error.message, "error");
+      } finally {
+        busy(false);
+      }
+    }
+
+    save.addEventListener("click", () => {
+      const changes = [];
+      for (const field of numberFields) {
+        const raw = inputs[field].value.trim();
+        const value = field === "loadFactor" && raw === "" ? null : Number(raw);
+        if (value !== state.initial[field]) changes.push([field, value]);
+      }
+      if (!changes.length) {
+        say("没有改动");
+        return;
+      }
+      apply(changes);
+    });
+
+    toggle.addEventListener("click", () => {
+      const next = state.account.closed;
+      if (!next && !confirm(`关闭 #${state.id} ${state.account.name} 的调度？手动关闭后不会自动恢复。`)) return;
+      apply([["schedulable", next]]);
+    });
+
+    close.addEventListener("click", () => toggleEditor(state.account));
+
+    state.sync = (current) => {
+      state.account = current;
+      toggle.textContent = current.closed ? "开启调度" : "关闭调度";
+    };
+    state.sync(account);
+    return state;
+  }
+
+  function toggleEditor(account) {
+    editor = editor?.id === account.id ? null : buildEditor(account);
+    if (latest) render(latest);
+    editor?.row.querySelector("input")?.focus();
+  }
+
   function renderDecision(record) {
-    const reopen = record.event === "reopen";
-    const from = reopen ? "关闭" : record.concurrency;
-    const to = reopen
-      ? record.concurrency
-      : record.event === "close" ? "关闭" : record.event === "floor_blocked" ? "保留" : String(record.nextConcurrency);
+    let from;
+    let to;
+    let change = null;
+    if (record.event === "manual") {
+      change = `${fieldLabels[record.field] ?? record.field} `;
+      from = formatValue(record.field, record.from);
+      to = formatValue(record.field, record.to);
+    } else if (record.event === "reopen") {
+      from = "关闭";
+      to = record.concurrency;
+    } else {
+      from = record.concurrency;
+      to = record.event === "close" ? "关闭" : record.event === "floor_blocked" ? "保留" : String(record.nextConcurrency);
+    }
     const row = h("tr", null,
       cell("c-time", null, h("time", null, formatClock(record.ts))),
       cell("c-event", null, eventLabels[record.event] ?? record.event),
       cell("c-account", null, h("span", "account-id", `#${record.id}`), h("span", "account-name", record.name)),
-      cell("c-change", "容量",
+      cell("c-change", "变化",
+        change,
         h("b", "figure", from),
         h("span", "arrow", "→"),
         to,
       ),
-      cell("c-rate", "错误率", reopen ? "—" : formatRate(record.rate)),
+      cell("c-rate", "错误率", "rate" in record ? formatRate(record.rate) : "—"),
     );
     row.dataset.attention = String(attentionEvents.has(record.event));
     return row;
   }
 
   function render(data) {
+    latest = data;
     const now = Date.parse(data.now);
     nodes.group.textContent = data.groupId;
     nodes.mode.textContent = data.dryRun ? "演练" : "实跑";
@@ -572,8 +783,14 @@
       nodes.alert.hidden = true;
     }
 
-    const accounts = data.accounts.map((account) => renderAccount(account, data.policy, now));
-    nodes.accounts.replaceChildren(...(accounts.length ? accounts : [emptyRow("暂无账号数据", 6)]));
+    const editing = editor && data.manualEnabled ? data.accounts.find((account) => account.id === editor.id) : undefined;
+    if (editing) editor.sync(editing);
+    else editor = null;
+    const accounts = data.accounts.flatMap((account) => {
+      const row = renderAccount(account, data.policy, now, data.manualEnabled);
+      return account === editing ? [row, editor.row] : [row];
+    });
+    nodes.accounts.replaceChildren(...(accounts.length ? accounts : [emptyRow("暂无账号数据", 9)]));
     nodes.accountCount.textContent = `${data.accounts.length} 个`;
 
     const decisions = data.decisions.map(renderDecision);

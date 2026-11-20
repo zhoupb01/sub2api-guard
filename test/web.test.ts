@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "../src/config";
+import { loadDecisions } from "../src/decision-log";
+import { createManualChange } from "../src/main";
+import { openState } from "../src/state";
+import { openAdminApi } from "../src/sub2api";
 import { startStatusServer } from "../src/web/server";
 import { createStatusStore, type DecisionRecord, type StatusSnapshot, type TickAccount } from "../src/web/store";
 
@@ -19,6 +26,7 @@ const policy = {
 const tickAt = "2026-11-19T12:00:00.000Z";
 const tickTime = Date.parse(tickAt);
 const webPassword = "test-web-password";
+const manualDisabled = async () => "disabled" as const;
 const sessionCookie = "guard_session=1797681600.fda6cdd2b2aa5c15800cae0baf1767930bb0e4fbb1ea595588ba74cc0172095d";
 
 function login(url: URL, password: string, forwardedFor?: string) {
@@ -35,6 +43,10 @@ function account(id: number, overrides: Partial<TickAccount> = {}): TickAccount 
     id,
     name: `账号 ${id}`,
     concurrency: 2,
+    priority: 10,
+    loadFactor: null,
+    closed: false,
+    closedAt: null,
     usable: true,
     since: "2026-11-19T11:50:00.000Z",
     recent: { errors: 3, successes: 37 },
@@ -101,13 +113,15 @@ test("shows a closed account from fresh tick data with its reopen time", () => {
   const store = createStatusStore({ groupId: 34, dryRun: true, policy });
   store.recordTick({
     now: tickAt,
-    accounts: [account(1, { closedAt: "2026-11-19T00:00:00.000Z" })],
+    accounts: [account(1, { closed: true, closedAt: "2026-11-19T00:00:00.000Z" })],
   });
 
   expect(store.status().accounts).toEqual([{
     id: 1,
     name: "账号 1",
     concurrency: 2,
+    priority: 10,
+    loadFactor: null,
     maxConcurrency: 3,
     usable: true,
     closed: true,
@@ -121,7 +135,7 @@ test("shows a closed account from fresh tick data with its reopen time", () => {
 
 test("logs in with the shared password and sets the signed session cookie for 30 days", async () => {
   const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, webPassword, () => tickTime);
+  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
   try {
     const response = await login(server.url, webPassword);
     expect(response.status).toBe(303);
@@ -136,10 +150,17 @@ test("logs in with the shared password and sets the signed session cookie for 30
 
 test("serves the snapshot at /api/status", async () => {
   const store = createStatusStore({ groupId: 34, dryRun: false, policy: { ...policy, maxOverrides: { "7": 2 } } });
-  store.recordTick({ now: tickAt, accounts: [account(1, { closedAt: "2026-11-19T00:00:00.000Z" }), account(7, { concurrency: 1 })] });
+  store.recordTick({
+    now: tickAt,
+    accounts: [
+      account(1, { closed: true, closedAt: "2026-11-19T00:00:00.000Z", priority: 1, loadFactor: 4 }),
+      account(7, { concurrency: 1 }),
+      account(9, { closed: true }),
+    ],
+  });
   store.addDecision(closeDecision(1));
 
-  const server = startStatusServer(store, 0, webPassword, () => tickTime);
+  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
   try {
     const response = await fetch(new URL("/api/status", server.url), { headers: { cookie: sessionCookie } });
     const snapshot = await response.json() as StatusSnapshot;
@@ -153,11 +174,15 @@ test("serves the snapshot at /api/status", async () => {
     expect(snapshot.accounts.map(({ id, maxConcurrency, closed }) => ({ id, maxConcurrency, closed }))).toEqual([
       { id: 1, maxConcurrency: 3, closed: true },
       { id: 7, maxConcurrency: 2, closed: false },
+      { id: 9, maxConcurrency: 3, closed: true },
     ]);
+    expect(snapshot.accounts[2]).toMatchObject({ closed: true, closedAt: null, reopenAt: null });
     expect(snapshot.accounts[0]).toEqual({
       id: 1,
       name: "账号 1",
       concurrency: 2,
+      priority: 1,
+      loadFactor: 4,
       maxConcurrency: 3,
       usable: true,
       closed: true,
@@ -178,7 +203,7 @@ test("reports the latest tick error and clears it on the next tick", async () =>
   const store = createStatusStore({ groupId: 34, dryRun: true, policy });
   store.recordError("2026-11-19T11:59:00.000Z", "connect ECONNREFUSED");
 
-  const server = startStatusServer(store, 0, webPassword, () => tickTime);
+  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
   try {
     const url = new URL("/api/status", server.url);
     const headers = { cookie: sessionCookie };
@@ -208,7 +233,7 @@ function expectHtml(response: Response, status: number) {
 
 test("shows the login form and protects status from anonymous requests", async () => {
   const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, webPassword, () => tickTime);
+  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
   try {
     const page = await fetch(server.url);
     expectHtml(page, 200);
@@ -225,9 +250,230 @@ test("shows the login form and protects status from anonymous requests", async (
   }
 });
 
+test("protects manual account changes from anonymous requests", async () => {
+  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
+  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
+  try {
+    const response = await fetch(new URL("/api/accounts/1", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ concurrency: 2 }),
+    });
+    expect(response.status).toBe(401);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ error: "unauthorized" });
+  } finally {
+    server.stop(true);
+  }
+});
+
+test.each([
+  ["application/json", '{"priority":1,"concurrency":2}'],
+  ["application/json", '{"concurrency":"2"}'],
+  ["application/json", '{"loadFactor":0}'],
+  ["application/json", '{"loadFactor":10001}'],
+  ["application/json", '{"priority":-1}'],
+  ["application/json", '{"concurrency":1.5}'],
+  ["application/json", '{"schedulable":1}'],
+  ["application/json", '{"unknown":1}'],
+  ["application/json", '{}'],
+  ["application/json", 'null'],
+  ["application/json", '{'],
+  ["text/plain", '{"concurrency":2}'],
+])("rejects invalid manual input (%s, %s)", async (contentType, body) => {
+  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
+  store.recordTick({ now: tickAt, accounts: [account(1)] });
+  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
+  try {
+    const response = await fetch(new URL("/api/accounts/1", server.url), {
+      method: "POST",
+      headers: { cookie: sessionCookie, "content-type": contentType },
+      body,
+    });
+    expect(response.status).toBe(400);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ error: "参数不对" });
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("rejects unknown accounts and manual changes without an admin key", async () => {
+  const store = createStatusStore({ groupId: 34, dryRun: true, policy });
+  store.recordTick({ now: tickAt, accounts: [account(1)] });
+  const changeAccount = createManualChange({
+    store,
+    admin: undefined,
+    getState: async () => { throw new Error("Unexpected state write"); },
+    simulated: new Map(),
+    decisionLog: "unused",
+  });
+  const server = startStatusServer(store, 0, webPassword, changeAccount, () => tickTime);
+  try {
+    const status = await fetch(new URL("/api/status", server.url), { headers: { cookie: sessionCookie } });
+    expect((await status.json() as StatusSnapshot).manualEnabled).toBe(false);
+
+    for (const [id, code, error] of [
+      [99, 404, "账号不在列表里"],
+      [1, 409, "没有设置 ADMIN_API_KEY，不能手动调整"],
+    ] as const) {
+      const response = await fetch(new URL(`/api/accounts/${id}`, server.url), {
+        method: "POST",
+        headers: { cookie: sessionCookie, "content-type": "application/json" },
+        body: JSON.stringify({ concurrency: 2 }),
+      });
+      expect(response.status).toBe(code);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.json()).toEqual({ error });
+    }
+  } finally {
+    server.stop(true);
+  }
+});
+
+async function withManualServer(
+  dryRun: boolean,
+  upstream: (request: Request) => Response | Promise<Response>,
+  check: (context: {
+    url: URL;
+    decisionLog: string;
+    state: Awaited<ReturnType<typeof openState>>;
+  }) => Promise<void>,
+  simulatedConcurrency?: number | null,
+) {
+  const directory = await mkdtemp(join(tmpdir(), "sub2api-guard-manual-"));
+  const decisionLog = join(directory, "decisions.jsonl");
+  const adminServer = Bun.serve({ port: 0, fetch: upstream });
+  try {
+    const state = await openState(join(directory, "state.json"));
+    const closedAt = simulatedConcurrency === undefined || simulatedConcurrency === null ? "2026-11-19T00:00:00.000Z" : undefined;
+    await state.set(1, { closedAt, lastChangeAt: tickAt });
+    const store = createStatusStore({ groupId: 34, dryRun, policy, manualEnabled: true });
+    store.recordTick({
+      now: tickAt,
+      accounts: [account(1, {
+        concurrency: simulatedConcurrency ?? 2,
+        closed: closedAt !== undefined,
+        closedAt: closedAt ?? null,
+        lastChangeAt: tickAt,
+      })],
+    });
+    const admin = openAdminApi(adminServer.url.href, "test-key");
+    const simulated = new Map(simulatedConcurrency === undefined ? [] : [[1, {
+      concurrency: simulatedConcurrency, actual: { concurrency: 2, closed: false },
+    }]]);
+    const changeAccount = createManualChange({ store, admin, getState: async () => state, simulated, decisionLog });
+    const server = startStatusServer(store, 0, webPassword, changeAccount, () => tickTime);
+    try {
+      await check({ url: server.url, decisionLog, state });
+    } finally {
+      server.stop(true);
+    }
+  } finally {
+    adminServer.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+function postManualChange(url: URL, change: object) {
+  return fetch(new URL("/api/accounts/1", url), {
+    method: "POST",
+    headers: { cookie: sessionCookie, "content-type": "application/json; charset=utf-8" },
+    body: JSON.stringify(change),
+  });
+}
+
+async function manualStatus(url: URL) {
+  const response = await fetch(new URL("/api/status", url), { headers: { cookie: sessionCookie } });
+  expect(response.status).toBe(200);
+  return await response.json() as StatusSnapshot;
+}
+
+test.each([true, false])("applies and records manual changes immediately with dryRun=%s", async (dryRun) => {
+  const writes: unknown[] = [];
+  await withManualServer(dryRun, async (request) => {
+    writes.push({ path: new URL(request.url).pathname, body: await request.json() });
+    return Response.json({ code: 0, data: { success_ids: [1] } });
+  }, async ({ url, decisionLog, state }) => {
+    const before = await manualStatus(url);
+    expect(before.manualEnabled).toBe(true);
+    for (const [field, from, to] of [
+      ["concurrency", 2, 4],
+      ["priority", 10, 0],
+      ["loadFactor", null, 10000],
+      ["loadFactor", 10000, null],
+      ["schedulable", false, false],
+      ["schedulable", false, true],
+    ] as const) {
+      const previousChangeAt = state.get(1)?.lastChangeAt ?? null;
+      const response = await postManualChange(url, { [field]: to });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.json()).toEqual({ ok: true });
+
+      const snapshot = await manualStatus(url);
+      const [row] = snapshot.accounts;
+      expect(snapshot.lastTickAt).toBe(tickAt);
+      if (field === "schedulable") {
+        expect(row).toMatchObject({ closed: !to, closedAt: null, reopenAt: null });
+        expect(state.get(1)?.closedAt).toBeUndefined();
+      } else {
+        expect(row[field]).toBe(to);
+        expect(row.closedAt).toBe("2026-11-19T00:00:00.000Z");
+      }
+      const [decision] = snapshot.decisions;
+      const lastChangeAt = field === "concurrency" || (field === "schedulable" && to) ? decision.ts : previousChangeAt;
+      expect(row.lastChangeAt).toBe(lastChangeAt);
+      expect(state.get(1)?.lastChangeAt ?? null).toBe(lastChangeAt);
+      expect(decision).toEqual({
+        ts: expect.any(String), event: "manual", id: 1, name: "账号 1",
+        concurrency: 4, lastChangeAt, dryRun, field, from, to,
+      });
+      expect(await loadDecisions(decisionLog, dryRun)).toEqual(snapshot.decisions);
+    }
+  });
+  expect(writes).toEqual([
+    { path: "/api/v1/admin/accounts/bulk-update", body: { account_ids: [1], concurrency: 4 } },
+    { path: "/api/v1/admin/accounts/bulk-update", body: { account_ids: [1], priority: 0 } },
+    { path: "/api/v1/admin/accounts/bulk-update", body: { account_ids: [1], load_factor: 10000 } },
+    { path: "/api/v1/admin/accounts/bulk-update", body: { account_ids: [1], load_factor: 0 } },
+    { path: "/api/v1/admin/accounts/1/schedulable", body: { schedulable: false } },
+    { path: "/api/v1/admin/accounts/1/schedulable", body: { schedulable: true } },
+  ]);
+});
+
+test.each([
+  { simulatedConcurrency: null, change: { concurrency: 4 }, concurrency: 4, closed: false },
+  { simulatedConcurrency: 5, change: { schedulable: false }, concurrency: 2, closed: true },
+])("manual changes replace the dry-run override $simulatedConcurrency", async ({ simulatedConcurrency, change, concurrency, closed }) => {
+  await withManualServer(true, () => Response.json({ code: 0, data: { success_ids: [1] } }), async ({ url }) => {
+    expect((await postManualChange(url, change)).status).toBe(200);
+    expect((await manualStatus(url)).accounts[0]).toMatchObject({ concurrency, closed, closedAt: null, reopenAt: null });
+
+    expect((await postManualChange(url, { schedulable: true })).status).toBe(200);
+    expect((await manualStatus(url)).accounts[0]).toMatchObject({ concurrency, closed: false, closedAt: null, reopenAt: null });
+  }, simulatedConcurrency);
+});
+
+test("reports a rejected admin write and leaves status and history intact", async () => {
+  await withManualServer(true, () => Response.json({ code: 73 }), async ({ url, decisionLog, state }) => {
+    const before = await manualStatus(url);
+    const previousState = state.get(1);
+    const response = await postManualChange(url, { schedulable: true });
+    expect(response.status).toBe(502);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ error: "sub2api 拒绝了修改：Admin API rejected request (code 73)" });
+    const after = await manualStatus(url);
+    expect(after.accounts).toEqual(before.accounts);
+    expect(after.decisions).toEqual([]);
+    expect(await loadDecisions(decisionLog, true)).toEqual([]);
+    expect(state.get(1)).toEqual(previousState);
+  });
+});
+
 test("shows a login error for a wrong password", async () => {
   const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, webPassword, () => tickTime);
+  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
   try {
     const response = await login(server.url, "wrong");
     expectHtml(response, 401);
@@ -241,7 +487,7 @@ test("shows a login error for a wrong password", async () => {
 test("limits the sixth attempt by the last forwarded IP and lets failures age out", async () => {
   const store = createStatusStore({ groupId: 34, dryRun: true, policy });
   let now = tickTime;
-  const server = startStatusServer(store, 0, webPassword, () => now);
+  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => now);
   try {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       now = tickTime + attempt * 60_000;
@@ -263,7 +509,7 @@ test("limits the sixth attempt by the last forwarded IP and lets failures age ou
 
 test("shares the peer IP limit between direct and forwarded logins", async () => {
   const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, webPassword, () => tickTime);
+  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
   try {
     const url = new URL(server.url);
     url.hostname = "127.0.0.1";
@@ -283,7 +529,7 @@ test("shares the peer IP limit between direct and forwarded logins", async () =>
 
 test("shows the status page after login and rejects unknown paths and methods", async () => {
   const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, webPassword, () => tickTime);
+  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
   try {
     const response = await login(server.url, webPassword);
     const cookie = response.headers.get("set-cookie")!.split(";")[0];
@@ -310,7 +556,7 @@ test("shows the status page after login and rejects unknown paths and methods", 
 test("an empty WEB_PASSWORD stops the status server from starting", () => {
   const config = loadConfig({ DATABASE_URL: "postgres://unused", WEB_PASSWORD: "" });
   const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  expect(() => startStatusServer(store, 0, config.webPassword).stop(true)).toThrow("WEB_PASSWORD is empty");
+  expect(() => startStatusServer(store, 0, config.webPassword, manualDisabled).stop(true)).toThrow("WEB_PASSWORD is empty");
 });
 
 test.each([
@@ -320,7 +566,7 @@ test.each([
   { name: "previous password", cookie: sessionCookie, password: "new-web-password", now: tickTime },
 ])("rejects a cookie with $name", async ({ cookie, password, now }) => {
   const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, password, () => now);
+  const server = startStatusServer(store, 0, password, manualDisabled, () => now);
   try {
     const headers = { cookie };
     const response = await fetch(new URL("/api/status", server.url), { headers });
@@ -334,7 +580,7 @@ test.each([
 
 test("logs out by expiring the session cookie and returning to the home page", async () => {
   const store = createStatusStore({ groupId: 34, dryRun: true, policy });
-  const server = startStatusServer(store, 0, webPassword, () => tickTime);
+  const server = startStatusServer(store, 0, webPassword, manualDisabled, () => tickTime);
   try {
     const response = await fetch(new URL("/logout", server.url), {
       method: "POST",

@@ -4,6 +4,8 @@ interface Account {
   id: number;
   name: string;
   concurrency: number;
+  priority: number;
+  loadFactor: number | null;
   usable: boolean;
 }
 
@@ -22,40 +24,26 @@ export function openDatabase(url: string, groupId: number, errorPatterns: string
   const sql = new SQL({ url, connection: { default_transaction_read_only: "on" } });
   const patterns = JSON.stringify(errorPatterns);
 
-  return {
-    async accounts(now: string): Promise<Account[]> {
-      const rows = await sql<Account[]>`
-        SELECT a.id, a.name, a.concurrency,
-               COALESCE(GREATEST(a.temp_unschedulable_until, a.rate_limit_reset_at, a.overload_until)
-                        <= ${now}::timestamptz, true) AS usable
-        FROM accounts AS a
-        JOIN account_groups AS ag ON ag.account_id = a.id
-        WHERE ag.group_id = ${groupId}
-          AND a.deleted_at IS NULL
-          AND a.parent_account_id IS NULL
-          AND a.status = 'active'
-          AND a.schedulable = true
-        ORDER BY a.id
-      `;
-      return rows.map((row) => ({ ...row, id: Number(row.id) }));
-    },
+  async function accountsByScheduling(now: string, schedulable: boolean): Promise<Account[]> {
+    const rows = await sql<Account[]>`
+      SELECT a.id, a.name, a.concurrency, a.priority, a.load_factor AS "loadFactor",
+             COALESCE(GREATEST(a.temp_unschedulable_until, a.rate_limit_reset_at, a.overload_until)
+                      <= ${now}::timestamptz, true) AS usable
+      FROM accounts AS a
+      JOIN account_groups AS ag ON ag.account_id = a.id
+      WHERE ag.group_id = ${groupId}
+        AND a.deleted_at IS NULL
+        AND a.parent_account_id IS NULL
+        AND a.status = 'active'
+        AND a.schedulable = ${schedulable}
+      ORDER BY a.id
+    `;
+    return rows.map((row) => ({ ...row, id: Number(row.id) }));
+  }
 
-    async closedAccounts(now: string): Promise<Account[]> {
-      const rows = await sql<Account[]>`
-        SELECT a.id, a.name, a.concurrency,
-               COALESCE(GREATEST(a.temp_unschedulable_until, a.rate_limit_reset_at, a.overload_until)
-                        <= ${now}::timestamptz, true) AS usable
-        FROM accounts AS a
-        JOIN account_groups AS ag ON ag.account_id = a.id
-        WHERE ag.group_id = ${groupId}
-          AND a.deleted_at IS NULL
-          AND a.parent_account_id IS NULL
-          AND a.status = 'active'
-          AND a.schedulable = false
-        ORDER BY a.id
-      `;
-      return rows.map((row) => ({ ...row, id: Number(row.id) }));
-    },
+  return {
+    accounts: (now: string) => accountsByScheduling(now, true),
+    closedAccounts: (now: string) => accountsByScheduling(now, false),
 
     async traffic(windows: AccountWindow[], healthySince: string, now: string) {
       // Bind JSON strings as text so Bun does not encode them as JSON strings again.

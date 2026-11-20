@@ -4,14 +4,19 @@ export type TrafficStats = ReturnType<typeof trafficStats>;
 
 export interface TickAccount extends AccountSample {
   name: string;
+  priority: number;
+  loadFactor: number | null;
   since: string;
-  closedAt?: string | null;
+  closed: boolean;
+  closedAt: string | null;
 }
 
 export interface RecordedAccount {
   id: number;
   name: string;
   concurrency: number;
+  priority: number;
+  loadFactor: number | null;
   maxConcurrency: number;
   usable: boolean;
   closed: boolean;
@@ -21,6 +26,12 @@ export interface RecordedAccount {
   recent: { since: string } & TrafficStats;
   healthy: TrafficStats;
 }
+
+export type ManualChange =
+  | { field: "concurrency"; value: number }
+  | { field: "priority"; value: number }
+  | { field: "loadFactor"; value: number | null }
+  | { field: "schedulable"; value: boolean };
 
 interface DecisionRecordBase {
   ts: string;
@@ -32,6 +43,12 @@ interface DecisionRecordBase {
 }
 
 export type DecisionRecord = DecisionRecordBase & (
+  | {
+      event: "manual";
+      field: ManualChange["field"];
+      from: ManualChange["value"];
+      to: ManualChange["value"];
+    }
   | {
       event: "reopen";
       closedAt: string;
@@ -67,29 +84,33 @@ export function createStatusStore(meta: {
   groupId: number;
   dryRun: boolean;
   policy: Policy;
+  manualEnabled?: boolean;
   decisions?: readonly DecisionRecord[];
 }) {
   const rows = new Map<number, RecordedAccount>();
   const decisions: DecisionRecord[] = [...(meta.decisions ?? [])].slice(0, decisionLimit);
   let lastTickAt: string | null = null;
   let lastError: RecordedError | null = null;
+  const reopenAt = (closedAt: string | null) => closedAt === null
+    ? null
+    : new Date(Date.parse(closedAt) + meta.policy.reopenMinutes * minute).toISOString();
 
   return {
     recordTick({ now, accounts }: { now: string; accounts: readonly TickAccount[] }) {
       rows.clear();
       for (const account of accounts) {
-        const closedAt = account.closedAt ?? null;
+        const { closedAt } = account;
         rows.set(account.id, {
           id: account.id,
           name: account.name,
           concurrency: account.concurrency,
+          priority: account.priority,
+          loadFactor: account.loadFactor,
           maxConcurrency: meta.policy.maxOverrides[account.id] ?? meta.policy.maxConcurrency,
           usable: account.usable,
-          closed: closedAt !== null,
+          closed: account.closed,
           closedAt,
-          reopenAt: closedAt === null
-            ? null
-            : new Date(Date.parse(closedAt) + meta.policy.reopenMinutes * minute).toISOString(),
+          reopenAt: reopenAt(closedAt),
           lastChangeAt: account.lastChangeAt ?? null,
           recent: { since: account.since, ...trafficStats(account.recent) },
           healthy: trafficStats(account.healthy),
@@ -97,6 +118,19 @@ export function createStatusStore(meta: {
       }
       lastTickAt = now;
       lastError = null;
+    },
+
+    getAccount(id: number) {
+      return rows.get(id);
+    },
+
+    updateAccount(account: RecordedAccount, changes: Partial<Pick<RecordedAccount,
+      "concurrency" | "priority" | "loadFactor" | "closed" | "closedAt" | "lastChangeAt"
+    >>) {
+      const updated = { ...account, ...changes };
+      updated.reopenAt = reopenAt(updated.closedAt);
+      rows.set(account.id, updated);
+      return updated;
     },
 
     addDecision(record: DecisionRecord) {
@@ -112,6 +146,7 @@ export function createStatusStore(meta: {
       return {
         now: new Date().toISOString(),
         dryRun: meta.dryRun,
+        manualEnabled: meta.manualEnabled ?? false,
         groupId: meta.groupId,
         policy: meta.policy,
         lastTickAt,

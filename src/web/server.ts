@@ -1,5 +1,7 @@
 import { createAuth, createLoginLimiter, expiredSessionCookie, sessionName } from "./auth";
-import type { StatusStore } from "./store";
+import type { ManualChange, StatusStore } from "./store";
+
+export type ChangeAccount = (id: number, change: ManualChange) => Promise<"missing" | "disabled" | { error: string } | void>;
 
 const pagePath = new URL("./index.html", import.meta.url);
 const loginPath = new URL("./login.html", import.meta.url);
@@ -27,7 +29,27 @@ function redirectHome(cookie: string) {
   return new Response(null, { status: 303, headers: { location: "/", "set-cookie": cookie } });
 }
 
-export function startStatusServer(store: StatusStore, port: number, password: string, now = Date.now) {
+async function readManualChange(request: Request): Promise<ManualChange | undefined> {
+  const contentType = request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") return;
+  const body: unknown = await request.json().catch(() => null);
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return;
+  const entries = Object.entries(body);
+  if (entries.length !== 1) return;
+  const [[field, value]] = entries;
+  if (field === "schedulable" && typeof value === "boolean") return { field, value };
+  if (field === "loadFactor" && value === null) return { field, value };
+  if (typeof value !== "number" || !Number.isInteger(value)) return;
+  if (field === "concurrency" && value >= 1) return { field, value };
+  if (field === "priority" && value >= 0) return { field, value };
+  if (field === "loadFactor" && value >= 1 && value <= 10000) return { field, value };
+}
+
+function jsonError(error: string, status: number) {
+  return Response.json({ error }, { status, headers: noStore });
+}
+
+export function startStatusServer(store: StatusStore, port: number, password: string, changeAccount: ChangeAccount, now = Date.now) {
   if (!password) throw new Error("WEB_PASSWORD is empty");
   const auth = createAuth(password);
   const attemptLogin = createLoginLimiter();
@@ -48,13 +70,21 @@ export function startStatusServer(store: StatusStore, port: number, password: st
         return redirectHome(auth.sessionCookie(requestedAt));
       }
       if (request.method === "POST" && pathname === "/logout") return redirectHome(expiredSessionCookie);
-      if (request.method === "GET" && (pathname === "/" || pathname === "/api/status")) {
+      const accountPath = request.method === "POST" && pathname.match(/^\/api\/accounts\/(\d+)$/);
+      if (accountPath || (request.method === "GET" && (pathname === "/" || pathname === "/api/status"))) {
         const cookies = new Bun.CookieMap(request.headers.get("cookie") ?? "");
         const signedIn = auth.hasSession(cookies.get(sessionName), now());
         if (pathname === "/") return html(Bun.file(signedIn ? pagePath : loginPath));
-        return signedIn
-          ? Response.json(store.status(), { headers: noStore })
-          : Response.json({ error: "unauthorized" }, { status: 401, headers: noStore });
+        if (!signedIn) return jsonError("unauthorized", 401);
+        if (!accountPath) return Response.json(store.status(), { headers: noStore });
+
+        const change = await readManualChange(request);
+        if (!change) return jsonError("参数不对", 400);
+        const result = await changeAccount(Number(accountPath[1]), change);
+        if (result === "missing") return jsonError("账号不在列表里", 404);
+        if (result === "disabled") return jsonError("没有设置 ADMIN_API_KEY，不能手动调整", 409);
+        if (result) return jsonError(`sub2api 拒绝了修改：${result.error}`, 502);
+        return Response.json({ ok: true }, { headers: noStore });
       }
       return new Response("Not found", { status: 404 });
     },
