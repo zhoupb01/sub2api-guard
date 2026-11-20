@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
@@ -30,12 +30,15 @@ const tickAt = "2026-11-19T12:00:00.000Z";
 const tickTime = Date.parse(tickAt);
 const webPassword = "test-web-password";
 const manualDisabled = async () => "disabled" as const;
-const probe = createProbeRunner({ baseUrl: "", adminApiKey: "", probeApiKey: "", groupName: "账号测试" });
+const probe = createProbeRunner({ baseUrl: "",
+  getApiKeys: () => ({ admin: null, probe: null, updatedAt: null }),
+});
 const sessionCookie = "guard_session=1797681600.fda6cdd2b2aa5c15800cae0baf1767930bb0e4fbb1ea595588ba74cc0172095d";
 
 function startTestServer(store: StatusStore, password: string, changeAccount: ChangeAccount, now = () => tickTime) {
   return startStatusServer(store, 0, password, { dist, changeAccount, now, probe,
     saveSettings: async () => { throw new Error("Unexpected settings write"); },
+    saveApiKeys: async () => { throw new Error("Unexpected API key write"); },
     series: async (range) => ({ range, bucketMinutes: 5, from: tickAt, to: tickAt, accounts: [] }),
   });
 }
@@ -314,7 +317,7 @@ test("rejects unknown accounts and manual changes without an admin key", async (
   const store = createStatusStore({ groupId: 34, dryRun: true });
   store.recordTick({ now: tickAt, accounts: [account(1)] });
   const { state, decisions, close } = openGuardDb(":memory:", true);
-  const changeAccount = createManualChange({ store, admin: undefined, state, simulated: new Map(), decisions });
+  const changeAccount = createManualChange({ store, getAdmin: () => undefined, state, simulated: new Map(), decisions });
   const server = startTestServer(store, webPassword, changeAccount, () => tickTime);
   try {
     const status = await fetch(new URL("/api/status", server.url), { headers: { cookie: sessionCookie } });
@@ -322,7 +325,7 @@ test("rejects unknown accounts and manual changes without an admin key", async (
 
     for (const [id, code, error] of [
       [99, 404, "账号不在列表里"],
-      [1, 409, "没有设置 ADMIN_API_KEY，不能手动调整"],
+      [1, 409, "请先在设置页填 Admin API Key，才能手动调整"],
     ] as const) {
       const response = await fetch(new URL(`/api/accounts/${id}`, server.url), {
         method: "POST",
@@ -349,11 +352,12 @@ async function withManualServer(
   simulatedConcurrency?: number | null,
 ) {
   const adminServer = Bun.serve({ port: 0, fetch: upstream });
-  const { state, decisions, close } = openGuardDb(":memory:", dryRun);
+  const { state, decisions, apiKeys, close } = openGuardDb(":memory:", dryRun);
   try {
+    apiKeys.save({ admin: "test-key" }, tickAt);
     const closedAt = simulatedConcurrency === undefined || simulatedConcurrency === null ? "2026-11-19T00:00:00.000Z" : undefined;
     state.set(1, { closedAt, lastChangeAt: tickAt, priorityBump: 3 });
-    const store = createStatusStore({ groupId: 34, dryRun, manualEnabled: true });
+    const store = createStatusStore({ groupId: 34, dryRun, getApiKeys: apiKeys.get });
     store.recordTick({
       now: tickAt,
       accounts: [account(1, {
@@ -368,7 +372,7 @@ async function withManualServer(
     const simulated = new Map(simulatedConcurrency === undefined ? [] : [[1, {
       concurrency: simulatedConcurrency, actual: { concurrency: 2, closed: false },
     }]]);
-    const changeAccount = createManualChange({ store, admin, state, simulated, decisions, now: () => tickTime });
+    const changeAccount = createManualChange({ store, getAdmin: () => admin, state, simulated, decisions, now: () => tickTime });
     const server = startTestServer(store, webPassword, changeAccount, () => tickTime);
     try {
       await check({ url: server.url, decisions, state });
@@ -648,14 +652,113 @@ test("requires a session and a supported range for series", async () => {
   }
 });
 
-test("requires an authenticated full JSON settings object and saves valid changes", async () => {
+function postKeys(url: URL, body: string, contentType = "application/json", cookie = sessionCookie) {
+  return fetch(new URL("/api/keys", url), { method: "POST", headers: { "content-type": contentType, cookie }, body });
+}
+
+test("saves, clears, and preserves omitted API keys without exposing their values", async () => {
   const guardDb = openGuardDb(":memory:", true);
-  const guard = createGuard({ groupId: 34, dryRun: true, guardDb, now: () => tickTime, database: {
+  let time = tickTime;
+  const guard = createGuard({ groupId: 34, dryRun: true, sub2apiUrl: "", guardDb, now: () => time, database: {
     accounts: async () => [], closedAccounts: async () => [],
     traffic: async () => ({ errors: new Map(), successes: new Map() }),
   } });
   const server = startStatusServer(guard.store, 0, webPassword, {
-    dist, probe, now: () => tickTime, changeAccount: guard.changeAccount, saveSettings: guard.saveSettings,
+    ...guard, dist, probe, now: () => time,
+    series: async () => { throw new Error("Unexpected series read"); },
+  });
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const post = (body: string, contentType?: string, cookie?: string) => postKeys(server.url, body, contentType, cookie);
+    const unsigned = await post('{"admin":"admin-saved"}', "application/json", "");
+    expect(unsigned.status).toBe(401);
+    expect(await unsigned.json()).toEqual({ error: "unauthorized" });
+    for (const body of ['{}', '[]', 'null', '{', '{"admin":"   "}', '{"probe":42}', '{"admin":"abc","other":null}']) {
+      const invalid = await post(body);
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toEqual({ error: "参数不对" });
+    }
+    expect((await post('{"admin":"abc"}', "text/plain")).status).toBe(400);
+    expect(await manualStatus(server.url)).toMatchObject({
+      apiKeys: { admin: false, probe: false, updatedAt: null }, manualEnabled: false, probeEnabled: false,
+    });
+
+    const save = async (body: string, contentType?: string) => {
+      const response = await post(body, contentType);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ ok: true });
+    };
+    await save('{"admin":"  admin-saved  ","probe":"probe-saved"}', "application/json; charset=utf-8");
+    expect(guardDb.apiKeys.get()).toEqual({ admin: "admin-saved", probe: "probe-saved", updatedAt: tickAt });
+    const status = await fetch(new URL("/api/status", server.url), { headers: { cookie: sessionCookie } });
+    const statusBody = await status.text();
+    expect(statusBody).not.toContain("admin-saved");
+    expect(statusBody).not.toContain("probe-saved");
+    expect(JSON.parse(statusBody)).toMatchObject({
+      apiKeys: { admin: true, probe: true, updatedAt: tickAt }, manualEnabled: true, probeEnabled: true,
+    });
+
+    time += 1_000;
+    await save('{"admin":null}');
+    const updatedAt = "2026-11-19T12:00:01.000Z";
+    expect(guardDb.apiKeys.get()).toEqual({ admin: null, probe: "probe-saved", updatedAt });
+    expect(await manualStatus(server.url)).toMatchObject({
+      apiKeys: { admin: false, probe: true, updatedAt }, manualEnabled: false, probeEnabled: false,
+    });
+    await save('{"probe":null}');
+    expect(guardDb.apiKeys.get()).toEqual({ admin: null, probe: null, updatedAt });
+    expect(log.mock.calls).toEqual([
+      [JSON.stringify({ event: "api_keys", admin: "set", probe: "set" })],
+      [JSON.stringify({ event: "api_keys", admin: "cleared", probe: "unchanged" })],
+      [JSON.stringify({ event: "api_keys", admin: "unchanged", probe: "cleared" })],
+    ]);
+  } finally {
+    log.mockRestore();
+    server.stop(true);
+    guardDb.close();
+  }
+});
+
+test("manual changes use the key most recently saved after startup", async () => {
+  const keysUsed: (string | null)[] = [];
+  const upstream = Bun.serve({ port: 0, fetch(request) {
+    keysUsed.push(request.headers.get("x-api-key"));
+    return Response.json({ code: 0, data: { success_ids: [1] } });
+  } });
+  const guardDb = openGuardDb(":memory:", true);
+  const guard = createGuard({ groupId: 34, dryRun: true, sub2apiUrl: upstream.url.href, guardDb, now: () => tickTime, database: {
+    accounts: async () => [account(1, { concurrency: 3 })], closedAccounts: async () => [],
+    traffic: async () => ({ errors: new Map(), successes: new Map() }),
+  } });
+  const server = startStatusServer(guard.store, 0, webPassword, {
+    ...guard, dist, probe, now: () => tickTime,
+    series: async () => { throw new Error("Unexpected series read"); },
+  });
+  try {
+    await guard.tick();
+    expect((await postManualChange(server.url, { priority: 5 })).status).toBe(409);
+    for (const [key, priority] of [["first-admin-key", 5], ["rotated-admin-key", 6]] as const) {
+      expect((await postKeys(server.url, JSON.stringify({ admin: key }))).status).toBe(200);
+      expect((await postManualChange(server.url, { priority })).status).toBe(200);
+    }
+    expect((await postKeys(server.url, '{"admin":null}')).status).toBe(200);
+    expect((await postManualChange(server.url, { priority: 7 })).status).toBe(409);
+    expect(keysUsed).toEqual(["first-admin-key", "rotated-admin-key"]);
+  } finally {
+    server.stop(true);
+    upstream.stop(true);
+    guardDb.close();
+  }
+});
+
+test("requires an authenticated full JSON settings object and saves valid changes", async () => {
+  const guardDb = openGuardDb(":memory:", true);
+  const guard = createGuard({ groupId: 34, dryRun: true, sub2apiUrl: "", guardDb, now: () => tickTime, database: {
+    accounts: async () => [], closedAccounts: async () => [],
+    traffic: async () => ({ errors: new Map(), successes: new Map() }),
+  } });
+  const server = startStatusServer(guard.store, 0, webPassword, {
+    ...guard, dist, probe, now: () => tickTime,
     series: async () => { throw new Error("Unexpected series read"); },
   });
   const url = new URL("/api/settings", server.url);
@@ -663,7 +766,8 @@ test("requires an authenticated full JSON settings object and saves valid change
     fetch(url, { method: "POST", headers: { "content-type": contentType, cookie }, body });
   try {
     const value = { ...defaultSettings, maxOverrides: { "12": 6 }, errorPatterns: ["NEW"], minSchedulable: 0,
-      priorityStep: 0, errorRate: 1, healthyRate: 1 };
+      priorityStep: 0, errorRate: 1, healthyRate: 1, tickSeconds: 10, barkUrl: "https://example.test/device",
+      probeGroupName: "自定义测试" };
     expect((await request(JSON.stringify(value), "application/json", "")).status).toBe(401);
 
     const invalidValues = [
@@ -676,6 +780,11 @@ test("requires an authenticated full JSON settings object and saves valid change
       { ...value, maxOverrides: [] }, { ...value, maxOverrides: { "-12": 6 } },
       { ...value, maxOverrides: { "12": 0 } }, { ...value, errorPatterns: [] },
       { ...value, errorPatterns: [" "] }, { ...value, errorPatterns: [42] },
+      { ...value, tickSeconds: undefined }, { ...value, tickSeconds: 9 }, { ...value, tickSeconds: 3_601 },
+      { ...value, tickSeconds: 10.5 }, { ...value, tickSeconds: "10" },
+      { ...value, barkUrl: undefined }, { ...value, barkUrl: " " }, { ...value, barkUrl: "/push" },
+      { ...value, barkUrl: "ftp://example.test/device" }, { ...value, barkUrl: 123 },
+      { ...value, probeGroupName: undefined }, { ...value, probeGroupName: " \n" }, { ...value, probeGroupName: 123 },
     ];
     for (const body of [...invalidValues.map((value) => JSON.stringify(value)), "{"]) {
       const response = await request(body);
@@ -690,6 +799,12 @@ test("requires an authenticated full JSON settings object and saves valid change
     expect(await response.json()).toEqual({ ok: true });
     expect(guardDb.settings.get()).toEqual({ value, updatedAt: tickAt });
     expect(await manualStatus(server.url)).toMatchObject({ settings: value, settingsUpdatedAt: tickAt });
+
+    for (const barkUrl of ["http://example.test/device", ""]) {
+      const next = { ...value, tickSeconds: 3_600, barkUrl };
+      expect((await request(JSON.stringify(next))).status).toBe(200);
+      expect((await manualStatus(server.url)).settings).toEqual(next);
+    }
   } finally {
     server.stop(true);
     guardDb.close();

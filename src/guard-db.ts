@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
 import { defaultSettings, type Settings } from "./settings";
 import type { DecisionRecord } from "./web/store";
 
@@ -20,6 +21,42 @@ export interface SavedSettings {
   updatedAt: string | null;
 }
 
+export type ApiKeyUpdate = {
+  admin?: string | null;
+  probe?: string | null;
+};
+
+type SavedApiKeys = Required<ApiKeyUpdate> & { updatedAt: string | null };
+const unsetApiKeys: SavedApiKeys = { admin: null, probe: null, updatedAt: null };
+
+function getApiKeys(database: Database): SavedApiKeys {
+  return database.query<SavedApiKeys, []>(
+    "SELECT admin_api_key AS admin, probe_api_key AS probe, updated_at AS updatedAt FROM api_keys WHERE id = 1",
+  ).get() ?? { ...unsetApiKeys };
+}
+
+function getSettings(database: Database): SavedSettings {
+  const row = database.query<{ value: string; updatedAt: string }, []>(
+    "SELECT value, updated_at AS updatedAt FROM settings WHERE id = 1",
+  ).get();
+  return row ? { value: { ...defaultSettings, ...JSON.parse(row.value) }, updatedAt: row.updatedAt }
+    : { value: defaultSettings, updatedAt: null };
+}
+
+export function readProbeConfig(path: string) {
+  const { probeGroupName } = defaultSettings;
+  if (!existsSync(path)) return { ...unsetApiKeys, probeGroupName };
+  const database = new Database(path, { readonly: true });
+  try {
+    const hasTable = database.query("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?");
+    const keys = hasTable.get("api_keys") ? getApiKeys(database) : unsetApiKeys;
+    const settings = hasTable.get("settings") ? getSettings(database).value : defaultSettings;
+    return { ...keys, probeGroupName: settings.probeGroupName };
+  } finally {
+    database.close();
+  }
+}
+
 export interface GuardDb {
   state: {
     get(id: number): AccountState | undefined;
@@ -33,6 +70,10 @@ export interface GuardDb {
   settings: {
     get(): SavedSettings;
     save(value: Settings, updatedAt: string): void;
+  };
+  apiKeys: {
+    get(): SavedApiKeys;
+    save(update: ApiKeyUpdate, updatedAt: string): void;
   };
   close(): void;
 }
@@ -66,6 +107,12 @@ export function openGuardDb(path: string, dryRun: boolean): GuardDb {
     CREATE TABLE IF NOT EXISTS settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      admin_api_key TEXT,
+      probe_api_key TEXT,
       updated_at TEXT NOT NULL
     );
   `);
@@ -104,12 +151,17 @@ export function openGuardDb(path: string, dryRun: boolean): GuardDb {
   const unpackDecision = ({ details, ...record }: DecisionRow): DecisionRecord => ({
     ...JSON.parse(details), ...record, dryRun,
   });
-  const getSettings = database.query<{ value: string; updatedAt: string }, []>(
-    "SELECT value, updated_at AS updatedAt FROM settings WHERE id = 1",
-  );
   const saveSettings = database.query(`
     INSERT INTO settings (id, value, updated_at) VALUES (1, ?, ?)
     ON CONFLICT (id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `);
+
+  const saveApiKeys = database.query(`
+    INSERT INTO api_keys (id, admin_api_key, probe_api_key, updated_at) VALUES (1, ?, ?, ?)
+    ON CONFLICT (id) DO UPDATE SET
+      admin_api_key = CASE WHEN ? THEN excluded.admin_api_key ELSE api_keys.admin_api_key END,
+      probe_api_key = CASE WHEN ? THEN excluded.probe_api_key ELSE api_keys.probe_api_key END,
+      updated_at = excluded.updated_at
   `);
 
   return {
@@ -145,12 +197,15 @@ export function openGuardDb(path: string, dryRun: boolean): GuardDb {
       },
     },
     settings: {
-      get() {
-        const row = getSettings.get();
-        return row ? { value: JSON.parse(row.value), updatedAt: row.updatedAt } : { value: defaultSettings, updatedAt: null };
-      },
+      get: () => getSettings(database),
       save(value, updatedAt) {
         saveSettings.run(JSON.stringify(value), updatedAt);
+      },
+    },
+    apiKeys: {
+      get: () => getApiKeys(database),
+      save({ admin, probe }, updatedAt) {
+        saveApiKeys.run(admin ?? null, probe ?? null, updatedAt, admin !== undefined, probe !== undefined);
       },
     },
     close: () => database.close(),

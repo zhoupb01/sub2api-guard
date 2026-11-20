@@ -83,7 +83,7 @@ export function openAdminApi(baseUrl: string, apiKey: string) {
           return;
         }
       }
-      throw new Error("PROBE_API_KEY was not found in sub2api");
+      throw new Error("Probe API Key was not found in sub2api");
     },
   };
 }

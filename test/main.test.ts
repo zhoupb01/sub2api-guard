@@ -1,8 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
+import { loadConfig } from "../src/config";
 import { openGuardDb, type GuardDb } from "../src/guard-db";
 import { createGuard } from "../src/main";
 import { defaultSettings } from "../src/settings";
-import { openAdminApi } from "../src/sub2api";
 
 const tickAt = Date.parse("2026-11-19T12:00:00.000Z");
 const upstreamAccount = { id: 1, name: "账号 1", concurrency: 3, priority: 10, loadFactor: null, usable: true };
@@ -25,7 +25,7 @@ test("a queued settings save takes effect on the next tick", () => withGuardDb(t
   const release = Promise.withResolvers<void>();
   const patternReads: string[][] = [];
   const guard = createGuard({
-    groupId: 34, dryRun: true, guardDb, now: () => tickAt,
+    groupId: 34, dryRun: true, sub2apiUrl: "", guardDb, now: () => tickAt,
     database: {
       accounts: async () => [upstreamAccount],
       closedAccounts: async () => [],
@@ -65,8 +65,9 @@ test("dry run shows a simulated priority and restores it on recovery without wri
     return Response.json({ code: 0, data: { success_ids: [1] } });
   } });
   try {
+    guardDb.apiKeys.save({ admin: "test-key" }, new Date(tickAt).toISOString());
     const guard = createGuard({
-      groupId: 34, dryRun: true, guardDb, now: () => now, admin: openAdminApi(upstream.url.href, "test-key"),
+      groupId: 34, dryRun: true, sub2apiUrl: upstream.url.href, guardDb, now: () => now,
       database: {
         accounts: async () => [upstreamAccount],
         closedAccounts: async () => [],
@@ -91,6 +92,133 @@ test("dry run shows a simulated priority and restores it on recovery without wri
   }
 }));
 
+test.each([
+  { tickSeconds: 10, dueAfter: 20_000 },
+  { tickSeconds: 60, dueAfter: 60_000 },
+  { tickSeconds: 120, dueAfter: 120_000 },
+])("the next tick is due at $dueAfter ms when saving a $tickSeconds s interval mid-wait", ({ tickSeconds, dueAfter }) => withGuardDb(true, async (guardDb) => {
+  jest.useFakeTimers();
+  try {
+    const guard = createGuard({
+      groupId: 34, dryRun: true, sub2apiUrl: "", guardDb,
+      database: {
+        accounts: async () => [], closedAccounts: async () => [],
+        traffic: async () => ({ errors: idle, successes: idle }),
+      },
+    });
+    const startedAt = await guard.tick();
+    jest.advanceTimersByTime(5_000); // Time spent inside the tick counts toward the interval.
+    let ready = false;
+    const wait = guard.waitForNextTick(startedAt).then(() => { ready = true; });
+    jest.advanceTimersByTime(15_000);
+    expect(ready).toBe(false);
+    await guard.saveSettings({ ...defaultSettings, tickSeconds, minRequests: 21 });
+
+    if (dueAfter > 20_000) {
+      jest.advanceTimersByTime(dueAfter - 20_000 - 1);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(ready).toBe(false);
+      jest.advanceTimersByTime(1);
+    }
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ready).toBe(true);
+    await wait;
+    expect(await guard.tick()).toBe(startedAt + dueAfter);
+  } finally {
+    jest.useRealTimers();
+  }
+}));
+
+test.each([false, true])("uses the Bark URL saved after startup only in real mode (dryRun=%s)", (dryRun) => withGuardDb(dryRun, async (guardDb) => {
+  const pushes: unknown[] = [];
+  const bark = Bun.serve({ port: 0, async fetch(request) {
+    pushes.push({ path: new URL(request.url).pathname, body: await request.json() });
+    return new Response(null, { status: 204 });
+  } });
+  try {
+    guardDb.apiKeys.save({ admin: "test-key" }, new Date(tickAt).toISOString());
+    const guard = createGuard({
+      groupId: 34, dryRun, sub2apiUrl: "", guardDb, now: () => tickAt,
+      database: {
+        accounts: async () => [{ ...upstreamAccount, concurrency: 1 }],
+        closedAccounts: async () => [],
+        traffic: async () => ({ errors, successes }),
+      },
+    });
+    await guard.tick();
+    expect(pushes).toEqual([]);
+    await guard.saveSettings({ ...defaultSettings, barkUrl: new URL("/device", bark.url).href });
+    await guard.tick();
+    expect(pushes).toEqual(dryRun ? [] : [{
+      path: "/device",
+      body: { title: "保留调度 #1 账号 1", body: expect.any(String), group: "sub2api" },
+    }]);
+  } finally {
+    bark.stop(true);
+  }
+}));
+
+test("real-mode config loads before an admin key has been set", () => {
+  expect(loadConfig({ DATABASE_URL: "postgres://unused", DRY_RUN: "0" }).dryRun).toBe(false);
+});
+
+test("real ticks pause without an admin key and use queued key changes on the next tick", () => withGuardDb(false, async (guardDb) => {
+  const keysUsed: (string | null)[] = [];
+  const upstream = Bun.serve({ port: 0, fetch(request) {
+    keysUsed.push(request.headers.get("x-api-key"));
+    return Response.json({ code: 0, data: { success_ids: [1] } });
+  } });
+  let now = tickAt;
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  try {
+    const guard = createGuard({
+      groupId: 34, dryRun: false, sub2apiUrl: upstream.url.href, guardDb, now: () => now,
+      database: {
+        accounts: async () => [upstreamAccount],
+        closedAccounts: async () => [],
+        traffic: async () => {
+          if (now > tickAt) {
+            entered.resolve();
+            await release.promise;
+          }
+          return { errors, successes };
+        },
+      },
+    });
+    const closedAt = "2026-11-19T00:00:00.000Z";
+    guardDb.state.set(1, { closedAt });
+    await guard.tick();
+    expect(guard.store.status()).toMatchObject({
+      lastError: { ts: "2026-11-19T12:00:00.000Z", message: "实跑模式需要先在设置页填 Admin API Key" },
+      decisions: [],
+    });
+    expect(guardDb.state.get(1)?.closedAt).toBe(closedAt);
+    expect(guardDb.decisions.recent(10)).toEqual([]);
+    expect(keysUsed).toEqual([]);
+
+    await guard.saveApiKeys({ admin: "first-admin-key" });
+    now += 60_000;
+    const tick = guard.tick();
+    await entered.promise;
+    const save = guard.saveApiKeys({ admin: "next-admin-key" });
+    await Promise.resolve();
+    expect(guardDb.apiKeys.get().admin).toBe("first-admin-key");
+    release.resolve();
+    await tick;
+    await save;
+    expect(guard.store.status().lastError).toBeNull();
+    now += 10 * 60_000;
+    await guard.tick();
+    expect(keysUsed).toEqual(["first-admin-key", "next-admin-key"]);
+  } finally {
+    release.resolve();
+    upstream.stop(true);
+  }
+}));
+
 test.each([true, false])("sends concurrency and changed priority together and commits state only on success=%s", (success) => withGuardDb(false, async (guardDb) => {
   const writes: unknown[] = [];
   const upstream = Bun.serve({ port: 0, async fetch(request) {
@@ -98,8 +226,9 @@ test.each([true, false])("sends concurrency and changed priority together and co
     return Response.json({ code: 0, data: { success_ids: success ? [1] : [] } });
   } });
   try {
+    guardDb.apiKeys.save({ admin: "test-key" }, new Date(tickAt).toISOString());
     const guard = createGuard({
-      groupId: 34, dryRun: false, guardDb, now: () => tickAt, admin: openAdminApi(upstream.url.href, "test-key"),
+      groupId: 34, dryRun: false, sub2apiUrl: upstream.url.href, guardDb, now: () => tickAt,
       database: {
         accounts: async () => [upstreamAccount],
         closedAccounts: async () => [],
@@ -126,8 +255,9 @@ test("restores stranded priority with unchanged concurrency and records healthy 
   } });
   try {
     guardDb.state.set(1, { priorityBump: 3 });
+    guardDb.apiKeys.save({ admin: "test-key" }, new Date(tickAt).toISOString());
     const guard = createGuard({
-      groupId: 34, dryRun: false, guardDb, now: () => tickAt, admin: openAdminApi(upstream.url.href, "test-key"),
+      groupId: 34, dryRun: false, sub2apiUrl: upstream.url.href, guardDb, now: () => tickAt,
       database: {
         accounts: async () => [{ ...upstreamAccount, concurrency: 4 }],
         closedAccounts: async () => [],

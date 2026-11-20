@@ -1,3 +1,4 @@
+import type { GuardDb } from "../guard-db";
 import { runProbe, type ProbeResult } from "../probe";
 import type { StatusStore } from "./store";
 
@@ -13,7 +14,7 @@ export type ProbeRun = {
   cancelled: boolean;
 };
 
-type ProbeCredentials = Pick<Parameters<typeof runProbe>[0], "baseUrl" | "adminApiKey" | "probeApiKey" | "groupName">;
+type ProbeStartSettings = Pick<Parameters<typeof runProbe>[0], "adminApiKey" | "probeApiKey" | "groupName">;
 type ProbeReply = { status: number; body?: { error: string } | { id: number } | { run: ProbeRun | null } };
 
 function readRequest(body: unknown, store: Pick<StatusStore, "getAccount">): ProbeRun["request"] | undefined {
@@ -26,16 +27,19 @@ function readRequest(body: unknown, store: Pick<StatusStore, "getAccount">): Pro
   return { accountIds, model, prompt, repeat };
 }
 
-export function createProbeRunner({ now = Date.now, ...credentials }: ProbeCredentials & { now?: () => number }) {
-  const enabled = Boolean(credentials.adminApiKey && credentials.probeApiKey);
+export function createProbeRunner({ baseUrl, getApiKeys, now = Date.now }: {
+  baseUrl: string;
+  getApiKeys: GuardDb["apiKeys"]["get"];
+  now?: () => number;
+}) {
   const timestamp = () => new Date(now()).toISOString();
   let lastRun: ProbeRun | null = null;
   let active: { run: ProbeRun; controller: AbortController; done: Promise<void> } | undefined;
 
-  async function execute(run: ProbeRun, signal: AbortSignal) {
+  async function execute(run: ProbeRun, settings: ProbeStartSettings, signal: AbortSignal) {
     try {
       const { exitCode } = await runProbe({
-        ...credentials, ...run.request,
+        baseUrl, ...settings, ...run.request,
         log: (message) => run.logs.push({ ts: timestamp(), message }),
         onResult: (result) => run.results.push(result),
       }, signal);
@@ -55,12 +59,12 @@ export function createProbeRunner({ now = Date.now, ...credentials }: ProbeCrede
   }
 
   return {
-    enabled,
     read(): ProbeReply {
       return { status: 200, body: { run: lastRun } };
     },
-    start(body: unknown, store: Pick<StatusStore, "getAccount">): ProbeReply {
-      if (!enabled) return { status: 409, body: { error: "没有设置 ADMIN_API_KEY 或 PROBE_API_KEY，不能测试" } };
+    start(body: unknown, store: Pick<StatusStore, "getAccount" | "getSettings">): ProbeReply {
+      const { admin, probe } = getApiKeys();
+      if (!admin || !probe) return { status: 409, body: { error: "请先在设置页填 Admin API Key 和 Probe API Key，才能测试" } };
       if (active) return { status: 409, body: { error: "已经有测试在跑，等它结束" } };
       const request = readRequest(body, store);
       if (!request) return { status: 400, body: { error: "参数不对" } };
@@ -72,7 +76,11 @@ export function createProbeRunner({ now = Date.now, ...credentials }: ProbeCrede
       };
       lastRun = run;
       const controller = new AbortController();
-      active = { run, controller, done: execute(run, controller.signal) };
+      const { probeGroupName } = store.getSettings().value;
+      active = {
+        run, controller,
+        done: execute(run, { adminApiKey: admin, probeApiKey: probe, groupName: probeGroupName }, controller.signal),
+      };
       return { status: 202, body: { id: run.id } };
     },
     cancel(): ProbeReply {

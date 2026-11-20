@@ -1,5 +1,5 @@
 import { minute, trafficStats, type AccountSample, type Decision } from "../decide";
-import type { SavedSettings } from "../guard-db";
+import type { GuardDb, SavedSettings } from "../guard-db";
 import { defaultSettings, maxConcurrencyFor } from "../settings";
 
 export type { SeriesResponse } from "../series";
@@ -93,8 +93,7 @@ export function createStatusStore(meta: {
   groupId: number;
   dryRun: boolean;
   settings?: SavedSettings;
-  manualEnabled?: boolean;
-  probeEnabled?: boolean;
+  getApiKeys?: GuardDb["apiKeys"]["get"];
   decisions?: readonly DecisionRecord[];
 }) {
   const rows = new Map<number, AccountRow>();
@@ -160,11 +159,15 @@ export function createStatusStore(meta: {
     accountIds,
 
     status() {
+      const keys = meta.getApiKeys?.();
+      const admin = Boolean(keys?.admin);
+      const probe = Boolean(keys?.probe);
       return {
         now: new Date().toISOString(),
         dryRun: meta.dryRun,
-        manualEnabled: meta.manualEnabled ?? false,
-        probeEnabled: meta.probeEnabled ?? false,
+        manualEnabled: admin,
+        probeEnabled: admin && probe,
+        apiKeys: { admin, probe, updatedAt: keys?.updatedAt ?? null },
         groupId: meta.groupId,
         settings: settings.value,
         settingsUpdatedAt: settings.updatedAt,

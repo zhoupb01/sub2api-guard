@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import { decide, decideReopens, recentSince, type AccountSample } from "../src/decide";
+import { defaultSettings } from "../src/settings";
 
 const now = Date.parse("2026-11-19T12:00:00Z");
 const policy = {
+  ...defaultSettings,
   windowMinutes: 10,
   minRequests: 20,
   errorRate: 0.05,

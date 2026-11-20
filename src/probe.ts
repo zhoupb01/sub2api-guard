@@ -1,5 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
+import { defaultGuardDbPath } from "./config";
+import { readProbeConfig } from "./guard-db";
 import { openAdminApi } from "./sub2api";
 
 type ProbeOptions = {
@@ -192,11 +194,15 @@ async function main(signal: AbortSignal) {
   if ((values.prompt === undefined) === (promptFile === undefined)) {
     throw new Error("Pass exactly one of --prompt and --prompt-file");
   }
+  const baseUrl = requiredEnv("SUB2API_URL");
+  const { admin, probe, probeGroupName } = readProbeConfig(process.env.GUARD_DB ?? defaultGuardDbPath);
+  if (!admin) throw new Error("Admin API Key is not set on the status page");
+  if (!probe) throw new Error("Probe API Key is not set on the status page");
   const { exitCode, results } = await runProbe({
-    baseUrl: requiredEnv("SUB2API_URL"),
-    adminApiKey: requiredEnv("ADMIN_API_KEY"),
-    probeApiKey: requiredEnv("PROBE_API_KEY"),
-    groupName: process.env.PROBE_GROUP_NAME || "账号测试",
+    baseUrl,
+    adminApiKey: admin,
+    probeApiKey: probe,
+    groupName: probeGroupName,
     accountIds: positionals.map((id) => positiveInteger(id, "Account id")),
     model: values.model,
     repeat: positiveInteger(values.repeat, "--repeat"),

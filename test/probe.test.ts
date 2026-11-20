@@ -1,9 +1,15 @@
 import { afterEach, expect, mock, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { openGuardDb } from "../src/guard-db";
+import { createGuard } from "../src/main";
 import { runProbe } from "../src/probe";
+import { defaultSettings } from "../src/settings";
 import { createProbeRunner, type ProbeRun } from "../src/web/probe-runner";
 import { startStatusServer } from "../src/web/server";
-import { createStatusStore, type StatusSnapshot } from "../src/web/store";
+import type { StatusSnapshot } from "../src/web/store";
 
 const options = {
   baseUrl: "https://sub2api.test",
@@ -22,7 +28,7 @@ afterEach(() => { globalThis.fetch = realFetch; });
 
 function mockSub2api(respond: (signal?: AbortSignal | null) => Response | Promise<Response>, {
   schedulable = true, failRestore = false, groupAccountCount = 1, createGroup = false,
-  beforeRestore = async () => {},
+  groupName = options.groupName, beforeRestore = async () => {},
 } = {}) {
   const actions: unknown[] = [];
   const success = (data: unknown) => Response.json({ code: 0, data });
@@ -42,7 +48,7 @@ function mockSub2api(respond: (signal?: AbortSignal | null) => Response | Promis
     expect(headers.get("x-api-key")).toBe("admin-test");
     switch (`${init?.method} ${path}`) {
       case "GET /api/v1/admin/groups/all?include_inactive=true":
-        return success(createGroup ? [] : [{ id: 88, name: "账号测试", platform: "openai" }]);
+        return success(createGroup ? [] : [{ id: 88, name: groupName, platform: "openai" }]);
       case "POST /api/v1/admin/groups":
         actions.push(body);
         return success({ id: 88, name: body.name, platform: body.platform });
@@ -209,17 +215,22 @@ async function withProbeServer(
     shutdown: () => Promise<void>;
   }) => Promise<void>,
 ) {
-  const probe = createProbeRunner({ ...credentials, baseUrl: options.baseUrl, groupName: options.groupName, now });
-  const store = createStatusStore({ groupId: 34, dryRun: true, probeEnabled: probe.enabled });
-  store.recordTick({ now: tickAt, accounts: [{
+  const guardDb = openGuardDb(":memory:", true);
+  if (credentials.adminApiKey || credentials.probeApiKey) {
+    guardDb.apiKeys.save({ admin: credentials.adminApiKey || null, probe: credentials.probeApiKey || null }, tickAt);
+  }
+  const probe = createProbeRunner({ baseUrl: options.baseUrl, getApiKeys: guardDb.apiKeys.get, now });
+  const guard = createGuard({ groupId: 34, dryRun: true, sub2apiUrl: options.baseUrl, guardDb, now, database: {
+    accounts: async () => [], closedAccounts: async () => [],
+    traffic: async () => ({ errors: new Map(), successes: new Map() }),
+  } });
+  guard.store.recordTick({ now: tickAt, accounts: [{
     id: 135, name: "test account", concurrency: 3, priority: 10, priorityBump: 2, usable: true,
     recent: { errors: 0, successes: 0 }, healthy: { errors: 0, successes: 0 },
     loadFactor: null, since: tickAt, closed: false, closedAt: null,
   }] });
-  const server = startStatusServer(store, 0, "probe-test", {
-    dist: import.meta.dir, probe, now,
-    changeAccount: async () => "disabled",
-    saveSettings: async () => { throw new Error("Unexpected settings write"); },
+  const server = startStatusServer(guard.store, 0, "probe-test", {
+    ...guard, dist: import.meta.dir, probe, now,
     series: async () => { throw new Error("Unexpected series read"); },
   });
   try {
@@ -242,6 +253,7 @@ async function withProbeServer(
   } finally {
     server.stop(true);
     await probe.shutdown();
+    guardDb.close();
   }
 }
 
@@ -277,10 +289,11 @@ test.each(["adminApiKey", "probeApiKey"] as const)("disables web probes when %s 
   expect(await (await api.get("/api/status")).json()).toMatchObject({ probeEnabled: false });
   const response = await api.post("/api/probe", probeRequest);
   expect(response.status).toBe(409);
-  expect(await response.json()).toEqual({ error: "没有设置 ADMIN_API_KEY 或 PROBE_API_KEY，不能测试" });
+  expect(await response.json()).toEqual({ error: "请先在设置页填 Admin API Key 和 Probe API Key，才能测试" });
 }));
 
-test("shows live progress, rejects an overlapping run, and waits for restoration after cancel", async () => {
+test("starts with saved keys and group, keeps them in flight, and waits for restoration after cancel", async () => {
+  const groupName = "页面自定义测试组";
   const secondRequest = Promise.withResolvers<void>();
   const restoreStarted = Promise.withResolvers<void>();
   const releaseRestore = Promise.withResolvers<void>();
@@ -293,14 +306,20 @@ test("shows live progress, rejects an overlapping run, and waits for restoration
       signal!.addEventListener("abort", () => reject(signal!.reason), { once: true });
     });
   }, {
+    groupName,
     async beforeRestore() {
       restoreStarted.resolve();
       await releaseRestore.promise;
     },
   });
-  await withProbeServer(options, async (api) => {
+  await withProbeServer({ adminApiKey: "", probeApiKey: "" }, async (api) => {
     const read = async () => (await (await api.get()).json() as { run: ProbeRun }).run;
     try {
+      expect((await api.post("/api/probe", probeRequest)).status).toBe(409);
+      expect((await api.post("/api/keys", { admin: options.adminApiKey })).status).toBe(200);
+      expect((await api.post("/api/probe", probeRequest)).status).toBe(409);
+      expect((await api.post("/api/keys", { probe: options.probeApiKey })).status).toBe(200);
+      expect((await api.post("/api/settings", { ...defaultSettings, probeGroupName: groupName })).status).toBe(200);
       const started = await api.post("/api/probe", probeRequest);
       expect(started.status).toBe(202);
       expect(await started.json()).toEqual({ id: 1 });
@@ -309,13 +328,15 @@ test("shows live progress, rejects an overlapping run, and waits for restoration
       expect(running).toMatchObject({ id: 1, request: probeRequest, startedAt: tickAt, finishedAt: null,
         error: null, exitCode: null, cancelled: false, results: [{ accountId: 135, requestNumber: 1, status: 200 }] });
       expect(running.logs).toEqual([
-        { ts: tickAt, message: "Account 135 (test account): moving to 账号测试" },
+        { ts: tickAt, message: `Account 135 (test account): moving to ${groupName}` },
         { ts: tickAt, message: "Account 135: request 1/2" },
         { ts: tickAt, message: "Account 135: request 2/2" },
       ]);
       const overlap = await api.post("/api/probe", probeRequest);
       expect(overlap.status).toBe(409);
       expect(await overlap.json()).toEqual({ error: "已经有测试在跑，等它结束" });
+      expect((await api.post("/api/keys", { admin: "new-admin-key", probe: "new-probe-key" })).status).toBe(200);
+      expect((await api.post("/api/settings", { ...defaultSettings, probeGroupName: "下一次用的测试组" })).status).toBe(200);
 
       const cancel = await api.post("/api/probe/cancel");
       expect(cancel.status).toBe(204);
@@ -341,8 +362,25 @@ test("shows live progress, rejects an overlapping run, and waits for restoration
   });
 });
 
-test("the CLI prints the same progress, results table, and full output", async () => {
-  const actions = mockSub2api(() => new Response('data: {"type":"response.output_text.delta","delta":"Hello world"}\n\n'));
+async function runProbeCli(databasePath: string, baseUrl: string) {
+  const child = Bun.spawn([process.execPath, fileURLToPath(new URL("../src/probe.ts", import.meta.url)),
+    "--model", options.model, "--prompt", options.prompt, "135"], {
+    env: { SUB2API_URL: baseUrl, GUARD_DB: databasePath, PROBE_GROUP_NAME: "ignored-env-group", DATABASE_URL: "",
+      ADMIN_API_KEY: "ignored-admin-key", PROBE_API_KEY: "ignored-probe-key" },
+    stdout: "pipe", stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+}
+
+test("the CLI uses SQLite keys and group and prints progress, the results table, and full output", async () => {
+  const groupName = "命令行自定义测试组";
+  const actions = mockSub2api(
+    () => new Response('data: {"type":"response.output_text.delta","delta":"Hello world"}\n\n'),
+    { groupName },
+  );
   const upstreamFetch = globalThis.fetch;
   globalThis.fetch = realFetch;
   const upstream = Bun.serve({ port: 0, async fetch(request) {
@@ -351,19 +389,17 @@ test("the CLI prints the same progress, results table, and full output", async (
       body: request.body ? await request.text() : undefined,
     });
   } });
+  const directory = await mkdtemp(join(tmpdir(), "sub2api-guard-probe-"));
   try {
-    const child = Bun.spawn([process.execPath, fileURLToPath(new URL("../src/probe.ts", import.meta.url)),
-      "--model", options.model, "--prompt", options.prompt, "135"], {
-      env: { SUB2API_URL: upstream.url.href, ADMIN_API_KEY: options.adminApiKey, PROBE_API_KEY: options.probeApiKey,
-        PROBE_GROUP_NAME: "", DATABASE_URL: "" },
-      stdout: "pipe", stderr: "pipe",
-    });
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
-    ]);
+    const path = join(directory, "guard.db");
+    const db = openGuardDb(path, true);
+    db.apiKeys.save({ admin: options.adminApiKey, probe: options.probeApiKey }, tickAt);
+    db.settings.save({ ...defaultSettings, probeGroupName: groupName }, tickAt);
+    db.close();
+    const { stdout, stderr, exitCode } = await runProbeCli(path, upstream.url.href);
     expect(exitCode).toBe(0);
     expect(stderr).toBe(
-      "Account 135 (test account): moving to 账号测试\n" +
+      `Account 135 (test account): moving to ${groupName}\n` +
       "Account 135: request 1/1\n" +
       "Account 135: restoring scheduling and group bindings\n",
     );
@@ -375,5 +411,28 @@ test("the CLI prints the same progress, results table, and full output", async (
     expect(actions).toEqual([move, "confirm group", "request", { schedulable: true }, restore]);
   } finally {
     upstream.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the CLI reports missing stored keys without creating a database or using env keys", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sub2api-guard-probe-"));
+  try {
+    const path = join(directory, "guard.db");
+    const unusedUrl = "http://127.0.0.1:0";
+    const missingAdmin = { stdout: "", stderr: "Admin API Key is not set on the status page\n", exitCode: 1 };
+    expect(await runProbeCli(path, unusedUrl)).toEqual(missingAdmin);
+    expect(await Bun.file(path).exists()).toBe(false);
+    await Bun.write(path, "");
+    expect(await runProbeCli(path, unusedUrl)).toEqual(missingAdmin);
+    expect(Bun.file(path).size).toBe(0);
+    const db = openGuardDb(path, false);
+    db.apiKeys.save({ admin: options.adminApiKey }, tickAt);
+    db.close();
+    expect(await runProbeCli(path, unusedUrl)).toEqual({
+      stdout: "", stderr: "Probe API Key is not set on the status page\n", exitCode: 1,
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });

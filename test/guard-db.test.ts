@@ -4,7 +4,7 @@ import { defaultSettings } from "../src/settings";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openGuardDb } from "../src/guard-db";
+import { openGuardDb, readProbeConfig } from "../src/guard-db";
 import type { DecisionRecord } from "../src/web/store";
 
 function decision(id: number, dryRun: boolean): DecisionRecord {
@@ -146,6 +146,42 @@ test("defaults settings before the first save and shares saved settings across m
   const live = openGuardDb(path, false);
   try {
     expect(live.settings.get()).toEqual({ value, updatedAt });
+  } finally {
+    live.close();
+  }
+}));
+
+test("uses defaults for new fields in old settings and preserves saved values", () => withTempDatabase((path) => {
+  const { tickSeconds, barkUrl, probeGroupName, ...previousSettings } = { ...defaultSettings, maxConcurrency: 7 };
+  const updatedAt = "2026-11-19T12:00:00.000Z";
+  const guardDb = openGuardDb(path, false);
+  try {
+    expect(readProbeConfig(path).probeGroupName).toBe("账号测试");
+    const sqlite = new Database(path);
+    try {
+      sqlite.run("INSERT INTO settings (id, value, updated_at) VALUES (1, ?, ?)", [JSON.stringify(previousSettings), updatedAt]);
+    } finally {
+      sqlite.close();
+    }
+    expect(guardDb.settings.get()).toEqual({ value: { ...defaultSettings, maxConcurrency: 7 }, updatedAt });
+    expect(readProbeConfig(path).probeGroupName).toBe("账号测试");
+  } finally {
+    guardDb.close();
+  }
+}));
+
+test("persists API keys across opens and shares them across modes", () => withTempDatabase((path) => {
+  const updatedAt = "2026-11-19T12:00:00.000Z";
+  const dry = openGuardDb(path, true);
+  try {
+    expect(dry.apiKeys.get()).toEqual({ admin: null, probe: null, updatedAt: null });
+    dry.apiKeys.save({ admin: "admin-secret", probe: "probe-secret" }, updatedAt);
+  } finally {
+    dry.close();
+  }
+  const live = openGuardDb(path, false);
+  try {
+    expect(live.apiKeys.get()).toEqual({ admin: "admin-secret", probe: "probe-secret", updatedAt });
   } finally {
     live.close();
   }

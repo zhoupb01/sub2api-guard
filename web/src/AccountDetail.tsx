@@ -34,7 +34,7 @@ function Editor({ account, enabled, onChanged, onUnauthorized }: {
     setValues({ concurrency: toInput(concurrency), priority: toInput(priority), loadFactor: toInput(loadFactor) });
   }, [concurrency, priority, loadFactor]);
 
-  if (!enabled) return <p className="quiet">没有设置 ADMIN_API_KEY，不能手动调整。</p>;
+  if (!enabled) return <p className="quiet">先在<a href="#/settings">设置页</a>填 Admin API Key，才能手动调整。</p>;
 
   async function apply(changes: ManualChange[]) {
     setBusy(true);

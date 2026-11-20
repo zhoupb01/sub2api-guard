@@ -246,6 +246,8 @@ input:disabled, textarea:disabled { background: var(--wash); color: var(--muted)
 .setting-k { font-size: 13px; color: var(--ink); }
 .setting-input { display: flex; align-items: center; gap: 6px; }
 .setting-input input { width: 110px; }
+.text-setting { grid-template-columns: 120px minmax(0, 360px) minmax(0, 1fr); }
+.text-setting input { width: 100%; }
 .unit { font-size: 12px; color: var(--muted); }
 .setting-hint { font-size: 12px; color: var(--muted); }
 .overrides, .pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 18px; }
@@ -274,6 +276,16 @@ input:disabled, textarea:disabled { background: var(--wash); color: var(--muted)
 .logs li { font: 12px/1.7 var(--mono); color: var(--ink-2); overflow-wrap: anywhere; }
 .logs time { color: var(--faint); margin-right: 6px; }
 
+/* ---- API keys ----------------------------------------------------------- */
+.keys > .msg { margin-bottom: 8px; }
+.key-row { display: grid; grid-template-columns: 120px 70px 260px auto; align-items: center; gap: 4px 14px; padding: 8px 0; }
+.key-row + .key-row { border-top: 1px solid var(--rule); }
+.key-row input { width: 100%; }
+.key-row .btn { justify-self: start; }
+.key-row .setting-hint { grid-column: 1 / -1; }
+.keys .form-actions { margin-top: 10px; }
+.quiet a { color: var(--accent); }
+
 /* ---- login --------------------------------------------------------------- */
 .login-sheet { display: grid; place-items: center; min-height: 100vh; padding-top: 0; }
 .login { width: min(360px, 100%); }
@@ -295,6 +307,9 @@ input:disabled, textarea:disabled { background: var(--wash); color: var(--muted)
   .drawer-body { padding: 14px 16px 32px; }
   .setting { grid-template-columns: minmax(0, 1fr) auto; }
   .setting-hint { grid-column: 1 / -1; }
+  .text-setting { grid-template-columns: minmax(0, 1fr); }
+  .key-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .key-row input { grid-column: 1 / -1; }
 }
 @media (max-width: 600px) {
   .detail-top .card-figures { min-width: 0; width: 100%; }

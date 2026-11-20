@@ -3,7 +3,7 @@ import { sendBark } from "./bark";
 import { loadConfig } from "./config";
 import { openDatabase } from "./db";
 import { decide, decideReopens, minute, recentSince, trafficStats } from "./decide";
-import { openGuardDb, type GuardDb } from "./guard-db";
+import { openGuardDb, type ApiKeyUpdate, type GuardDb } from "./guard-db";
 import { createSeries } from "./series";
 import type { Settings } from "./settings";
 import { openAdminApi } from "./sub2api";
@@ -30,9 +30,9 @@ interface SimulatedAccount {
   actual: Pick<RecordedAccount, "concurrency" | "closed">;
 }
 
-export function createManualChange({ store, admin, state, simulated, decisions, now = Date.now }: {
+export function createManualChange({ store, getAdmin, state, simulated, decisions, now = Date.now }: {
   store: StatusStore;
-  admin: ReturnType<typeof openAdminApi> | undefined;
+  getAdmin: () => ReturnType<typeof openAdminApi> | undefined;
   state: GuardDb["state"];
   simulated: Map<number, SimulatedAccount>;
   decisions: GuardDb["decisions"];
@@ -42,6 +42,7 @@ export function createManualChange({ store, admin, state, simulated, decisions, 
   return async (id, change) => {
     const account = store.getAccount(id);
     if (!account) return "missing";
+    const admin = getAdmin();
     if (!admin) return "disabled";
 
     const { field, value } = change;
@@ -101,24 +102,25 @@ export function createManualChange({ store, admin, state, simulated, decisions, 
   };
 }
 
-export function createGuard({ groupId, dryRun, barkUrl, database, admin, guardDb, probeEnabled, now: clock = Date.now }: {
+export function createGuard({ groupId, dryRun, database, sub2apiUrl, guardDb, now: clock = Date.now }: {
   groupId: number;
+  sub2apiUrl: string;
   dryRun: boolean;
-  barkUrl?: string;
   database: Pick<ReturnType<typeof openDatabase>, "accounts" | "closedAccounts" | "traffic">;
-  admin?: ReturnType<typeof openAdminApi>;
   guardDb: GuardDb;
-  probeEnabled?: boolean;
   now?: () => number;
 }) {
-  const automaticAdmin = dryRun ? undefined : admin;
-  const { state, decisions, settings } = guardDb;
+  const { state, decisions, settings, apiKeys } = guardDb;
   const lastSummaryAt = new Map<number, number>();
   const simulated = new Map<number, SimulatedAccount>();
   const store = createStatusStore({
-    groupId, dryRun, settings: settings.get(), manualEnabled: admin !== undefined, probeEnabled, decisions: decisions.recent(200),
+    groupId, dryRun, settings: settings.get(), getApiKeys: apiKeys.get, decisions: decisions.recent(200),
   });
-  const changeAccount = createManualChange({ store, admin, state, simulated, decisions, now: clock });
+  const getAdmin = () => {
+    const { admin } = apiKeys.get();
+    return admin ? openAdminApi(sub2apiUrl, admin) : undefined;
+  };
+  const changeAccount = createManualChange({ store, getAdmin, state, simulated, decisions, now: clock });
 
   // A tick uses one snapshot while changes wait in the same queue.
   let pending: Promise<unknown> = Promise.resolve();
@@ -133,6 +135,9 @@ export function createGuard({ groupId, dryRun, barkUrl, database, admin, guardDb
     const now = clock();
     const nowIso = new Date(now).toISOString();
     try {
+      const automaticAdmin = dryRun ? undefined : getAdmin();
+      if (!dryRun && !automaticAdmin) throw new Error("实跑模式需要先在设置页填 Admin API Key");
+
       const accountData = [
         ...(await database.accounts(nowIso)).map((account) => ({ ...account, closed: false })),
         ...(await database.closedAccounts(nowIso)).map((account) => ({ ...account, closed: true })),
@@ -217,6 +222,7 @@ export function createGuard({ groupId, dryRun, barkUrl, database, admin, guardDb
         }
         state.set(account.id, { lastChangeAt: nowIso, closedAt: undefined });
 
+        const { barkUrl } = store.getSettings().value;
         if (dryRun || !barkUrl) continue;
         const hours = String(policy.reopenMinutes / 60);
         try {
@@ -288,7 +294,9 @@ export function createGuard({ groupId, dryRun, barkUrl, database, admin, guardDb
           });
         }
 
-        if (dryRun || !barkUrl || (event !== "close" && event !== "floor_blocked")) continue;
+        if (dryRun || (event !== "close" && event !== "floor_blocked")) continue;
+        const { barkUrl } = store.getSettings().value;
+        if (!barkUrl) continue;
         if (event === "floor_blocked") {
           const lastPushAt = state.get(id)?.lastFloorPushAt;
           if (lastPushAt !== undefined && now - Date.parse(lastPushAt) < 60 * minute) continue;
@@ -311,16 +319,43 @@ export function createGuard({ groupId, dryRun, barkUrl, database, admin, guardDb
     return now;
   }
 
+  let wakeTickWait: (() => void) | undefined;
+  async function waitForNextTick(startedAt: number) {
+    while (true) {
+      const { tickSeconds } = store.getSettings().value;
+      const remaining = startedAt + tickSeconds * 1_000 - clock();
+      if (remaining <= 0) return;
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, remaining);
+        wakeTickWait = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+      wakeTickWait = undefined;
+    }
+  }
+
   return {
     store,
     tick: () => serialize(tick),
+    waitForNextTick,
     changeAccount: ((id, change) => serialize(() => changeAccount(id, change))) satisfies ChangeAccount,
     saveSettings: (value: Settings) => serialize(() => {
       const { value: from } = store.getSettings();
       const updatedAt = new Date(clock()).toISOString();
       settings.save(value, updatedAt);
       store.setSettings({ value, updatedAt });
-      console.log(JSON.stringify({ event: "settings", from, to: value }));
+      if (from.tickSeconds !== value.tickSeconds) wakeTickWait?.();
+      // Bark URLs may contain a device key.
+      const { barkUrl: _previousBarkUrl, ...previous } = from;
+      const { barkUrl: _barkUrl, ...next } = value;
+      console.log(JSON.stringify({ event: "settings", from: previous, to: next }));
+    }),
+    saveApiKeys: (update: ApiKeyUpdate) => serialize(() => {
+      apiKeys.save(update, new Date(clock()).toISOString());
+      const action = (value: string | null | undefined) => value === undefined ? "unchanged" : value === null ? "cleared" : "set";
+      console.log(JSON.stringify({ event: "api_keys", admin: action(update.admin), probe: action(update.probe) }));
     }),
   };
 }
@@ -328,19 +363,17 @@ export function createGuard({ groupId, dryRun, barkUrl, database, admin, guardDb
 async function run() {
   const config = loadConfig();
   const database = openDatabase(config.databaseUrl, config.groupId);
-  const admin = config.adminApiKey ? openAdminApi(config.sub2apiUrl, config.adminApiKey) : undefined;
   const guardDb = openGuardDb(config.guardDb, config.dryRun);
   const probe = createProbeRunner({
-    baseUrl: config.sub2apiUrl, adminApiKey: config.adminApiKey,
-    probeApiKey: config.probeApiKey, groupName: config.probeGroupName,
+    baseUrl: config.sub2apiUrl, getApiKeys: guardDb.apiKeys.get,
   });
-  const guard = createGuard({ ...config, database, admin, guardDb, probeEnabled: probe.enabled });
+  const guard = createGuard({ ...config, database, guardDb });
   const series = createSeries(guard.store, guardDb.decisions, database.series);
   const dist = fileURLToPath(new URL("../web/dist/", import.meta.url));
   let server: ReturnType<typeof startStatusServer> | undefined;
   try {
     server = startStatusServer(guard.store, config.webPort, config.webPassword, {
-      dist, changeAccount: guard.changeAccount, saveSettings: guard.saveSettings, series, probe,
+      ...guard, dist, series, probe,
     });
     log("web_server", { port: config.webPort });
   } catch (error) {
@@ -359,8 +392,8 @@ async function run() {
   process.on("SIGINT", stop);
 
   while (!stopping) {
-    const now = await guard.tick();
-    await Bun.sleep(Math.max(0, config.tickSeconds * 1_000 - (Date.now() - now)));
+    const startedAt = await guard.tick();
+    if (!stopping) await guard.waitForNextTick(startedAt);
   }
 }
 

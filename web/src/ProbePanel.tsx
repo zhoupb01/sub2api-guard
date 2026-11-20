@@ -89,7 +89,7 @@ export function ProbePanel({ status, onUnauthorized }: { status: StatusSnapshot;
     return (
       <section className="section">
         <SectionTitle title="提示词测试" />
-        <p className="quiet">没有设置 ADMIN_API_KEY 或 PROBE_API_KEY，不能测试。在服务器的 .env 里填上后重启容器。</p>
+        <p className="quiet">先在<a href="#/settings">设置页</a>填 Admin API Key 和 Probe API Key，才能测试。</p>
       </section>
     );
   }

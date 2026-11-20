@@ -32,6 +32,7 @@ export const api = {
   series: (range: Range) => call<SeriesResponse>(`/api/series?range=${range}`),
   changeAccount: (id: number, change: ManualChange) => postJson<{ ok: true }>(`/api/accounts/${id}`, change),
   saveSettings: (settings: Settings) => postJson<{ ok: true }>("/api/settings", settings),
+  saveKeys: (keys: { admin?: string | null; probe?: string | null }) => postJson<{ ok: true }>("/api/keys", keys),
   probe: () => call<{ run: ProbeRun | null }>("/api/probe"),
   startProbe: (request: ProbeRun["request"]) => postJson<{ id: number }>("/api/probe", request),
   cancelProbe: () => postJson<void>("/api/probe/cancel"),

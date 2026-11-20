@@ -1,5 +1,6 @@
 import { realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { ApiKeyUpdate } from "../guard-db";
 import { isSeriesRange, type SeriesRange, type SeriesResponse } from "../series";
 import { isSettings, type Settings } from "../settings";
 import { createAuth, createLoginLimiter, expiredSessionCookie, sessionName } from "./auth";
@@ -66,16 +67,32 @@ async function readManualChange(request: Request): Promise<ManualChange | undefi
   if (field === "loadFactor" && value >= 1 && value <= 10000) return { field, value };
 }
 
+async function readApiKeyUpdate(request: Request): Promise<ApiKeyUpdate | undefined> {
+  const body = await readJson(request);
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return;
+  const entries = Object.entries(body);
+  if (!entries.length) return;
+  const update: ApiKeyUpdate = {};
+  for (const [field, value] of entries) {
+    if (field !== "admin" && field !== "probe") return;
+    const key: unknown = typeof value === "string" ? value.trim() : value;
+    if (key !== null && (typeof key !== "string" || !key)) return;
+    update[field] = key;
+  }
+  return update;
+}
+
 function jsonError(error: string, status: number) {
   return Response.json({ error }, { status, headers: noStore });
 }
 
 export function startStatusServer(store: StatusStore, port: number, password: string, {
-  dist, changeAccount, saveSettings, series, probe, now = Date.now,
+  dist, changeAccount, saveSettings, saveApiKeys, series, probe, now = Date.now,
 }: {
   dist: string;
   changeAccount: ChangeAccount;
   saveSettings: (settings: Settings) => Promise<void>;
+  saveApiKeys: (update: ApiKeyUpdate) => Promise<void>;
   series: (range: SeriesRange) => Promise<SeriesResponse>;
   probe: ProbeRunner;
   now?: () => number;
@@ -119,10 +136,11 @@ export function startStatusServer(store: StatusStore, port: number, password: st
       const statusRead = method === "GET" && pathname === "/api/status";
       const seriesRead = method === "GET" && pathname === "/api/series";
       const settingsWrite = method === "POST" && pathname === "/api/settings";
+      const keysWrite = method === "POST" && pathname === "/api/keys";
       const probeRead = method === "GET" && pathname === "/api/probe";
       const probeStart = method === "POST" && pathname === "/api/probe";
       const probeCancel = method === "POST" && pathname === "/api/probe/cancel";
-      if (accountPath || statusRead || seriesRead || settingsWrite || probeRead || probeStart || probeCancel) {
+      if (accountPath || statusRead || seriesRead || settingsWrite || keysWrite || probeRead || probeStart || probeCancel) {
         const cookies = new Bun.CookieMap(request.headers.get("cookie") ?? "");
         const signedIn = auth.hasSession(cookies.get(sessionName), now());
         if (!signedIn) return jsonError("unauthorized", 401);
@@ -145,12 +163,18 @@ export function startStatusServer(store: StatusStore, port: number, password: st
           await saveSettings(settings);
           return Response.json({ ok: true }, { headers: noStore });
         }
+        if (keysWrite) {
+          const update = await readApiKeyUpdate(request);
+          if (!update) return jsonError("参数不对", 400);
+          await saveApiKeys(update);
+          return Response.json({ ok: true }, { headers: noStore });
+        }
         if (!accountPath) return notFound();
         const change = await readManualChange(request);
         if (!change) return jsonError("参数不对", 400);
         const result = await changeAccount(Number(accountPath[1]), change);
         if (result === "missing") return jsonError("账号不在列表里", 404);
-        if (result === "disabled") return jsonError("没有设置 ADMIN_API_KEY，不能手动调整", 409);
+        if (result === "disabled") return jsonError("请先在设置页填 Admin API Key，才能手动调整", 409);
         if (result) return jsonError(`sub2api 拒绝了修改：${result.error}`, 502);
         return Response.json({ ok: true }, { headers: noStore });
       }
