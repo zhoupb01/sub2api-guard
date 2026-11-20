@@ -1,11 +1,7 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { loadConfig } from "../src/config";
-import { loadDecisions } from "../src/decision-log";
+import { openGuardDb, type GuardDb } from "../src/guard-db";
 import { createManualChange } from "../src/main";
-import { openState } from "../src/state";
 import { openAdminApi } from "../src/sub2api";
 import { startStatusServer } from "../src/web/server";
 import { createStatusStore, type DecisionRecord, type StatusSnapshot, type TickAccount } from "../src/web/store";
@@ -301,13 +297,8 @@ test.each([
 test("rejects unknown accounts and manual changes without an admin key", async () => {
   const store = createStatusStore({ groupId: 34, dryRun: true, policy });
   store.recordTick({ now: tickAt, accounts: [account(1)] });
-  const changeAccount = createManualChange({
-    store,
-    admin: undefined,
-    getState: async () => { throw new Error("Unexpected state write"); },
-    simulated: new Map(),
-    decisionLog: "unused",
-  });
+  const { state, decisions, close } = openGuardDb(":memory:", true);
+  const changeAccount = createManualChange({ store, admin: undefined, state, simulated: new Map(), decisions });
   const server = startStatusServer(store, 0, webPassword, changeAccount, () => tickTime);
   try {
     const status = await fetch(new URL("/api/status", server.url), { headers: { cookie: sessionCookie } });
@@ -326,28 +317,26 @@ test("rejects unknown accounts and manual changes without an admin key", async (
       expect(response.headers.get("cache-control")).toBe("no-store");
       expect(await response.json()).toEqual({ error });
     }
+    expect(state.get(1)).toBeUndefined();
+    expect(state.get(99)).toBeUndefined();
+    expect(decisions.recent(1)).toEqual([]);
   } finally {
     server.stop(true);
+    close();
   }
 });
 
 async function withManualServer(
   dryRun: boolean,
   upstream: (request: Request) => Response | Promise<Response>,
-  check: (context: {
-    url: URL;
-    decisionLog: string;
-    state: Awaited<ReturnType<typeof openState>>;
-  }) => Promise<void>,
+  check: (context: { url: URL; state: GuardDb["state"]; decisions: GuardDb["decisions"] }) => Promise<void>,
   simulatedConcurrency?: number | null,
 ) {
-  const directory = await mkdtemp(join(tmpdir(), "sub2api-guard-manual-"));
-  const decisionLog = join(directory, "decisions.jsonl");
   const adminServer = Bun.serve({ port: 0, fetch: upstream });
+  const { state, decisions, close } = openGuardDb(":memory:", dryRun);
   try {
-    const state = await openState(join(directory, "state.json"));
     const closedAt = simulatedConcurrency === undefined || simulatedConcurrency === null ? "2026-11-19T00:00:00.000Z" : undefined;
-    await state.set(1, { closedAt, lastChangeAt: tickAt });
+    state.set(1, { closedAt, lastChangeAt: tickAt });
     const store = createStatusStore({ groupId: 34, dryRun, policy, manualEnabled: true });
     store.recordTick({
       now: tickAt,
@@ -362,16 +351,16 @@ async function withManualServer(
     const simulated = new Map(simulatedConcurrency === undefined ? [] : [[1, {
       concurrency: simulatedConcurrency, actual: { concurrency: 2, closed: false },
     }]]);
-    const changeAccount = createManualChange({ store, admin, getState: async () => state, simulated, decisionLog });
+    const changeAccount = createManualChange({ store, admin, state, simulated, decisions });
     const server = startStatusServer(store, 0, webPassword, changeAccount, () => tickTime);
     try {
-      await check({ url: server.url, decisionLog, state });
+      await check({ url: server.url, decisions, state });
     } finally {
       server.stop(true);
     }
   } finally {
     adminServer.stop(true);
-    await rm(directory, { recursive: true, force: true });
+    close();
   }
 }
 
@@ -394,7 +383,7 @@ test.each([true, false])("applies and records manual changes immediately with dr
   await withManualServer(dryRun, async (request) => {
     writes.push({ path: new URL(request.url).pathname, body: await request.json() });
     return Response.json({ code: 0, data: { success_ids: [1] } });
-  }, async ({ url, decisionLog, state }) => {
+  }, async ({ url, decisions, state }) => {
     const before = await manualStatus(url);
     expect(before.manualEnabled).toBe(true);
     for (const [field, from, to] of [
@@ -429,7 +418,7 @@ test.each([true, false])("applies and records manual changes immediately with dr
         ts: expect.any(String), event: "manual", id: 1, name: "账号 1",
         concurrency: 4, lastChangeAt, dryRun, field, from, to,
       });
-      expect(await loadDecisions(decisionLog, dryRun)).toEqual(snapshot.decisions);
+      expect(decisions.recent(200)).toEqual(snapshot.decisions);
     }
   });
   expect(writes).toEqual([
@@ -456,7 +445,7 @@ test.each([
 });
 
 test("reports a rejected admin write and leaves status and history intact", async () => {
-  await withManualServer(true, () => Response.json({ code: 73 }), async ({ url, decisionLog, state }) => {
+  await withManualServer(true, () => Response.json({ code: 73 }), async ({ url, decisions, state }) => {
     const before = await manualStatus(url);
     const previousState = state.get(1);
     const response = await postManualChange(url, { schedulable: true });
@@ -466,7 +455,7 @@ test("reports a rejected admin write and leaves status and history intact", asyn
     const after = await manualStatus(url);
     expect(after.accounts).toEqual(before.accounts);
     expect(after.decisions).toEqual([]);
-    expect(await loadDecisions(decisionLog, true)).toEqual([]);
+    expect(decisions.recent(200)).toEqual([]);
     expect(state.get(1)).toEqual(previousState);
   });
 });

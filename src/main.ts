@@ -1,9 +1,8 @@
 import { sendBark } from "./bark";
 import { loadConfig } from "./config";
 import { openDatabase } from "./db";
-import { appendDecision, loadDecisions } from "./decision-log";
 import { decide, decideReopens, minute, recentSince, trafficStats } from "./decide";
-import { noChange, openState } from "./state";
+import { openGuardDb, type GuardDb } from "./guard-db";
 import { openAdminApi } from "./sub2api";
 import { startStatusServer, type ChangeAccount } from "./web/server";
 import { createStatusStore, type DecisionRecord, type RecordedAccount, type StatusStore } from "./web/store";
@@ -26,12 +25,12 @@ interface SimulatedAccount {
   actual: Pick<RecordedAccount, "concurrency" | "closed">;
 }
 
-export function createManualChange({ store, admin, getState, simulated, decisionLog }: {
+export function createManualChange({ store, admin, state, simulated, decisions }: {
   store: StatusStore;
   admin: ReturnType<typeof openAdminApi> | undefined;
-  getState: () => ReturnType<typeof openState>;
+  state: GuardDb["state"];
   simulated: Map<number, SimulatedAccount>;
-  decisionLog: string;
+  decisions: GuardDb["decisions"];
 }): ChangeAccount {
   const { dryRun } = store.status();
   return async (id, change) => {
@@ -56,17 +55,15 @@ export function createManualChange({ store, admin, getState, simulated, decision
     let changes: Parameters<StatusStore["updateAccount"]>[1];
     switch (field) {
       case "concurrency": {
-        const state = await getState();
-        await state.set(id, { lastChangeAt: ts });
+        state.set(id, { lastChangeAt: ts });
         simulated.delete(id);
         const closed = actual?.closed ?? account.closed;
         changes = { concurrency: value, lastChangeAt: ts, closed, closedAt: closed ? account.closedAt : null };
         break;
       }
       case "schedulable": {
-        const state = await getState();
-        if (value) await state.set(id, { lastChangeAt: ts, closedAt: undefined });
-        else if (state.get(id)?.closedAt !== undefined) await state.set(id, { closedAt: undefined });
+        if (value) state.set(id, { lastChangeAt: ts, closedAt: undefined });
+        else if (state.get(id)?.closedAt !== undefined) state.set(id, { closedAt: undefined });
         simulated.delete(id);
         changes = {
           concurrency: actual?.concurrency ?? account.concurrency,
@@ -89,7 +86,7 @@ export function createManualChange({ store, admin, getState, simulated, decision
     };
     store.addDecision(record);
     console.log(JSON.stringify(record));
-    await appendDecision(decisionLog, record);
+    decisions.append(record);
   };
 }
 
@@ -99,13 +96,11 @@ async function run() {
   const database = openDatabase(config.databaseUrl, config.groupId, config.errorPatterns);
   const admin = config.adminApiKey ? openAdminApi(config.sub2apiUrl, config.adminApiKey) : undefined;
   const automaticAdmin = dryRun ? undefined : admin;
-  const initialDecisions = await loadDecisions(config.decisionLog, dryRun);
+  const { state, decisions } = openGuardDb(config.guardDb, dryRun);
   const lastSummaryAt = new Map<number, number>();
   const simulated = new Map<number, SimulatedAccount>();
-  let loadedState: Awaited<ReturnType<typeof openState>> | undefined;
-  const store = createStatusStore({ groupId: config.groupId, dryRun, policy, manualEnabled: admin !== undefined, decisions: initialDecisions });
-  const getState = async () => loadedState ??= await openState(config.stateFile);
-  const changeAccount = createManualChange({ store, admin, getState, simulated, decisionLog: config.decisionLog });
+  const store = createStatusStore({ groupId: config.groupId, dryRun, policy, manualEnabled: admin !== undefined, decisions: decisions.recent(200) });
+  const changeAccount = createManualChange({ store, admin, state, simulated, decisions });
 
   // A tick must finish using its snapshot before a manual change can replace it.
   let pending: Promise<unknown> = Promise.resolve();
@@ -126,9 +121,6 @@ async function run() {
     const now = Date.now();
     const nowIso = new Date(now).toISOString();
     try {
-      const state = await getState();
-      await state.flush();
-
       const accountData = [
         ...(await database.accounts(nowIso)).map((account) => ({ ...account, closed: false })),
         ...(await database.closedAccounts(nowIso)).map((account) => ({ ...account, closed: true })),
@@ -140,10 +132,10 @@ async function run() {
         if (simulation) simulation.actual = account;
         const closed = account.closed || simulation?.concurrency === null;
         if (!closed && state.get(account.id)?.closedAt !== undefined) {
-          await state.set(account.id, { closedAt: undefined });
+          state.set(account.id, { closedAt: undefined });
         }
         const entry = state.get(account.id);
-        const lastChangeAt = entry?.lastChangeAt === noChange ? undefined : entry?.lastChangeAt;
+        const lastChangeAt = entry?.lastChangeAt;
         const since = new Date(recentSince(now, lastChangeAt, policy.windowMinutes)).toISOString();
         snapshots.push({
           ...account,
@@ -193,7 +185,7 @@ async function run() {
         };
         log("reopen", fields);
         const record: DecisionRecord = { ts: nowIso, event: "reopen", ...fields };
-        await appendDecision(config.decisionLog, record);
+        decisions.append(record);
         store.addDecision(record);
 
         if (automaticAdmin) {
@@ -206,7 +198,7 @@ async function run() {
         } else {
           simulated.delete(account.id);
         }
-        await state.set(account.id, { lastChangeAt: nowIso, closedAt: undefined });
+        state.set(account.id, { lastChangeAt: nowIso, closedAt: undefined });
 
         if (dryRun || !barkUrl) continue;
         const hours = String(policy.reopenMinutes / 60);
@@ -246,7 +238,7 @@ async function run() {
         };
         log(event, fields);
         const record: DecisionRecord = { ts: nowIso, event, ...fields };
-        await appendDecision(config.decisionLog, record);
+        decisions.append(record);
         store.addDecision(record);
 
         if (event !== "floor_blocked") {
@@ -262,7 +254,7 @@ async function run() {
           } else {
             simulated.set(id, { concurrency: nextCapacity, actual: accountsById.get(id)! });
           }
-          await state.set(id, {
+          state.set(id, {
             lastChangeAt: nowIso,
             ...(event === "close" ? { closedAt: nowIso } : {}),
           });
@@ -272,7 +264,7 @@ async function run() {
         if (event === "floor_blocked") {
           const lastPushAt = state.get(id)?.lastFloorPushAt;
           if (lastPushAt !== undefined && now - Date.parse(lastPushAt) < 60 * minute) continue;
-          await state.set(id, { lastFloorPushAt: nowIso });
+          state.set(id, { lastFloorPushAt: nowIso });
         }
         const title = event === "close" ? "关闭调度" : "保留调度";
         const minutes = Number(((now - Date.parse(since)) / minute).toFixed(1));
