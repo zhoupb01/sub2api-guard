@@ -60,7 +60,7 @@ docker compose logs -f sub2api-guard
 docker compose exec sub2api-guard bun run src/probe.ts --model gpt-6.1-sol --prompt "你好，请介绍一下自己" 135 146 149
 ```
 
-脚本按顺序测试账号，用完后恢复原调度状态和分组。一次只运行一个测试进程。支持 `--repeat n`，默认每个账号请求一次。也可以把提示词放在 `./data/prompt.txt`，用 `--prompt-file /data/prompt.txt` 代替 `--prompt`。测试无需 `DATABASE_URL`，适用于按分组调度的标准模式和默认的 1 秒调度轮询间隔。
+脚本按顺序把账号临时加入测试分组，测完后移出测试分组并恢复原调度状态（保留账号原有分组）。一次只运行一个测试进程。支持 `--repeat n`，默认每个账号请求一次。也可以把提示词放在 `./data/prompt.txt`，用 `--prompt-file /data/prompt.txt` 代替 `--prompt`。测试无需 `DATABASE_URL`，适用于按分组调度的标准模式和默认的 1 秒调度轮询间隔。
 
 ## 许可
 

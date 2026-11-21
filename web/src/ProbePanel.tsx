@@ -5,6 +5,13 @@ import { formatClock } from "./format";
 import { usePoll } from "./hooks";
 
 const modelKey = "probe-model";
+const defaultPrompt = `不使用任何外部工具回答以下问题：
+
+在一个黑色的袋子里放有三种口味的糖果，每种糖果有两种不同的形状（圆形和五角星形，不同的形状靠手感可以分辨）。现已知不同口味的糖和不同形状的数量统计如下表。参赛者需要在活动前决定摸出的糖果数目，那么，最少取出多少个糖果才能保证手中同时拥有不同形状的苹果味和桃子味的糖？（同时手中有圆形苹果味匹配五角星桃子味糖果，或者有圆形桃子味匹配五角星苹果味糖果都满足要求）
+
+        苹果味  桃子味  西瓜味
+圆形       7      9      8
+五角星形   7      6      4`;
 
 function readModel() {
   try {
@@ -75,7 +82,7 @@ function RunView({ run }: { run: ProbeRun }) {
 export function ProbePanel({ status, onUnauthorized }: { status: StatusSnapshot; onUnauthorized: () => void }) {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [model, setModel] = useState(readModel);
-  const [prompt, setPrompt] = useState("你好，请介绍一下自己");
+  const [prompt, setPrompt] = useState(defaultPrompt);
   const [repeat, setRepeat] = useState("1");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -133,7 +140,7 @@ export function ProbePanel({ status, onUnauthorized }: { status: StatusSnapshot;
   return (
     <section className="section">
       <SectionTitle title="提示词测试" note="一次只能跑一个" />
-      <p className="hint">按顺序把每个账号单独挪进测试分组，用你的提示词发请求，测完放回原来的分组和调度状态。测试期间这个账号不接正常请求。</p>
+      <p className="hint">按顺序把每个账号临时加入测试分组，用你的提示词发请求，测完再移出测试分组并恢复原调度状态。测试期间保留账号原有的分组，正常请求照常排队。</p>
       <form className="probe-form" onSubmit={submit}>
         <fieldset className="setting-group">
           <legend>账号</legend>
@@ -163,7 +170,7 @@ export function ProbePanel({ status, onUnauthorized }: { status: StatusSnapshot;
         </div>
         <label className="field">
           <span className="field-k">提示词</span>
-          <textarea rows={5} required value={prompt} onChange={(event) => setPrompt(event.target.value)} disabled={running} />
+          <textarea rows={10} required value={prompt} onChange={(event) => setPrompt(event.target.value)} disabled={running} />
         </label>
         <div className="form-actions">
           {running ? (

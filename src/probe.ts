@@ -101,15 +101,22 @@ export async function runProbe(options: ProbeOptions, signal: AbortSignal) {
       const account = await admin.getAccount(id);
       signal.throwIfAborted();
       const groupIds = account.group_ids ?? []; // Empty bindings are omitted by the account DTO.
-      log(`Account ${id} (${account.name}): moving to ${group.name}`);
+      const originalGroupIds = groupIds.filter((groupId) => groupId !== group.id);
+      let opened = false;
+      log(`Account ${id} (${account.name}): adding to ${group.name}`);
       try {
-        await admin.setGroups(id, [group.id]);
+        if (!groupIds.includes(group.id)) {
+          await admin.setGroups(id, [...originalGroupIds, group.id]);
+        }
         signal.throwIfAborted();
         if (!await admin.isOnlyGroupAccount(group.id, id)) {
           throw new Error(`Probe group ${group.id} does not contain exactly account ${id}. Skipping requests.`);
         }
         signal.throwIfAborted();
-        if (!account.schedulable) await admin.setSchedulable(id, true);
+        if (!account.schedulable) {
+          opened = true;
+          await admin.setSchedulable(id, true);
+        }
         // Group bindings reach the scheduler via its outbox worker (default poll interval: 1 s).
         await delay(1_000, undefined, { signal });
         for (let requestNumber = 1; requestNumber <= repeat && !signal.aborted; requestNumber++) {
@@ -121,14 +128,16 @@ export async function runProbe(options: ProbeOptions, signal: AbortSignal) {
           if (result.error !== undefined) exitCode = 1;
         }
       } finally {
-        log(`Account ${id}: restoring scheduling and group bindings`);
+        log(`Account ${id}: ${opened ? `restoring scheduling and removing from ${group.name}` : `removing from ${group.name}`}`);
         try {
-          // Leave the account isolated if its original scheduling state could not be restored.
-          await admin.setSchedulable(id, account.schedulable);
-          await admin.setGroups(id, groupIds);
+          if (opened) await admin.setSchedulable(id, false);
+          await admin.setGroups(id, originalGroupIds);
         } catch (error) {
           restoreFailed = true;
-          log(`Account ${id}: restore failed (${errorMessage(error)}). Reapply schedulable=${account.schedulable} then group_ids=[${groupIds.join(",")}].`);
+          const reapply = opened
+            ? `schedulable=false then group_ids=[${originalGroupIds.join(",")}]`
+            : `group_ids=[${originalGroupIds.join(",")}]`;
+          log(`Account ${id}: restore failed (${errorMessage(error)}). Reapply ${reapply}.`);
         }
       }
     } catch (error) {

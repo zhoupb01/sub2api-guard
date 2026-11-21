@@ -28,7 +28,7 @@ afterEach(() => { globalThis.fetch = realFetch; });
 
 function mockSub2api(respond: (signal?: AbortSignal | null) => Response | Promise<Response>, {
   schedulable = true, failRestore = false, groupAccountCount = 1, createGroup = false,
-  groupName = options.groupName, beforeRestore = async () => {},
+  groupName = options.groupName, groupIds = [34, 12], beforeRestore = async () => {},
 } = {}) {
   const actions: unknown[] = [];
   const success = (data: unknown) => Response.json({ code: 0, data });
@@ -64,10 +64,10 @@ function mockSub2api(respond: (signal?: AbortSignal | null) => Response | Promis
         actions.push(body);
         return success({ api_key: { id: 6, group_id: 88 } });
       case "GET /api/v1/admin/accounts/135":
-        return success({ id: 135, name: "test account", group_ids: [34, 12], schedulable });
+        return success({ id: 135, name: "test account", group_ids: groupIds, schedulable });
       case "POST /api/v1/admin/accounts/bulk-update":
         actions.push(body);
-        if (body.group_ids.includes(34)) await beforeRestore();
+        if (!body.group_ids.includes(88)) await beforeRestore();
         return success({ success_ids: [135] });
       case "GET /api/v1/admin/accounts?group=88&page_size=1&lite=true":
         actions.push("confirm group");
@@ -83,16 +83,16 @@ function mockSub2api(respond: (signal?: AbortSignal | null) => Response | Promis
   return actions;
 }
 
-const move = { account_ids: [135], group_ids: [88] };
-const restore = { account_ids: [135], group_ids: [34, 12] };
+const add = { account_ids: [135], group_ids: [34, 12, 88] };
+const remove = { account_ids: [135], group_ids: [34, 12] };
 const completed = () => new Response('data: {"type":"response.completed"}\n\n');
 
-test("restores scheduling before group bindings after a successful probe", async () => {
+test("adds to the probe group without clearing existing groups and removes it after a successful probe", async () => {
   const actions = mockSub2api(completed);
   const { exitCode, results } = await runProbe({ ...options, repeat: 2 }, new AbortController().signal);
   expect(exitCode).toBe(0);
   expect(results.map((result) => result.requestNumber)).toEqual([1, 2]);
-  expect(actions).toEqual([move, "confirm group", "request", "request", { schedulable: true }, restore]);
+  expect(actions).toEqual([add, "confirm group", "request", "request", remove]);
 });
 
 test("emits each request result before account restore", async () => {
@@ -109,40 +109,47 @@ test("emits each request result before account restore", async () => {
   expect(updates).toEqual(results);
   expect(updates).toHaveLength(2);
   expect(messages).toEqual([
-    "Account 135 (test account): moving to 账号测试",
+    "Account 135 (test account): adding to 账号测试",
     "Account 135: request 1/2",
     "Account 135: request 2/2",
-    "Account 135: restoring scheduling and group bindings",
+    "Account 135: removing from 账号测试",
   ]);
 });
 
-test("restores scheduling before groups after an HTTP error", async () => {
+test("removes the probe group after an HTTP error", async () => {
   const actions = mockSub2api(() => new Response("overloaded", { status: 503 }));
   const result = await runProbe(options, new AbortController().signal);
   expect(result).toMatchObject({ exitCode: 1, results: [{ status: 503, error: "overloaded" }] });
-  expect(actions).toEqual([move, "confirm group", "request", { schedulable: true }, restore]);
+  expect(actions).toEqual([add, "confirm group", "request", remove]);
 });
 
-test("restores scheduling before groups after fetch throws", async () => {
+test("removes the probe group after fetch throws", async () => {
   const actions = mockSub2api(() => { throw new Error("connection lost"); });
   const result = await runProbe(options, new AbortController().signal);
   expect(result).toMatchObject({ exitCode: 1, results: [{ error: "connection lost" }] });
-  expect(actions).toEqual([move, "confirm group", "request", { schedulable: true }, restore]);
+  expect(actions).toEqual([add, "confirm group", "request", remove]);
 });
 
-test("leaves the account isolated and stops the run if restoring closed scheduling fails", async () => {
+test("stops the run if restoring closed scheduling fails", async () => {
   const actions = mockSub2api(completed, { schedulable: false, failRestore: true });
   const result = await runProbe({ ...options, accountIds: [135, 146] }, new AbortController().signal);
   expect(result.exitCode).toBe(1);
-  expect(actions).toEqual([move, "confirm group", { schedulable: true }, "request", { schedulable: false }]);
+  expect(actions).toEqual([add, "confirm group", { schedulable: true }, "request", { schedulable: false }]);
   expect(globalThis.fetch).not.toHaveBeenCalledWith("https://sub2api.test/api/v1/admin/accounts/146", expect.anything());
 });
 
-test("opens a closed account only in the probe group and restores it closed", async () => {
+test("opens a closed account while keeping existing groups and restores it closed before removing the probe group", async () => {
   const actions = mockSub2api(completed, { schedulable: false });
   const result = await runProbe(options, new AbortController().signal);
   expect(result.exitCode).toBe(0);
-  expect(actions).toEqual([move, "confirm group", { schedulable: true }, "request", { schedulable: false }, restore]);
+  expect(actions).toEqual([add, "confirm group", { schedulable: true }, "request", { schedulable: false }, remove]);
+});
+
+test("does not duplicate the probe group when already bound and removes it after testing", async () => {
+  const actions = mockSub2api(completed, { groupIds: [34, 12, 88] });
+  const result = await runProbe(options, new AbortController().signal);
+  expect(result.exitCode).toBe(0);
+  expect(actions).toEqual(["confirm group", "request", remove]);
 });
 
 test("creates an exclusive group and binds the exact key even when it is on a later page", async () => {
@@ -151,18 +158,18 @@ test("creates an exclusive group and binds the exact key even when it is on a la
   expect(result.exitCode).toBe(0);
   expect(actions).toEqual([
     { name: "账号测试", platform: "openai", is_exclusive: true, rate_multiplier: 1 },
-    { group_id: 88 }, move, "confirm group", "request", { schedulable: true }, restore,
+    { group_id: 88 }, add, "confirm group", "request", remove,
   ]);
 });
 
-test("skips requests and restores when another account is in the probe group", async () => {
+test("skips requests and removes the probe group when another account is in the probe group", async () => {
   const actions = mockSub2api(completed, { schedulable: false, groupAccountCount: 2 });
   const result = await runProbe(options, new AbortController().signal);
   expect(result).toMatchObject({ exitCode: 1, results: [] });
-  expect(actions).toEqual([move, "confirm group", { schedulable: false }, restore]);
+  expect(actions).toEqual([add, "confirm group", remove]);
 });
 
-test("interrupting a request skips remaining repeats and restores with an active admin signal", async () => {
+test("interrupting a request skips remaining repeats and removes the probe group with an active admin signal", async () => {
   const controller = new AbortController();
   const actions = mockSub2api((requestSignal) => {
     controller.abort();
@@ -172,7 +179,7 @@ test("interrupting a request skips remaining repeats and restores with an active
   });
   const result = await runProbe({ ...options, repeat: 3 }, controller.signal);
   expect(result).toMatchObject({ exitCode: 1, results: [{ error: controller.signal.reason.message }] });
-  expect(actions).toEqual([move, "confirm group", "request", { schedulable: true }, restore]);
+  expect(actions).toEqual([add, "confirm group", "request", remove]);
 });
 
 test("collects SSE output deltas across chunks", async () => {
@@ -194,11 +201,11 @@ test("collects SSE output deltas across chunks", async () => {
 test.each([
   ['data: {"type":"error","message":"upstream error"}\n\n', "upstream error"],
   ['event: response.failed\ndata: {"type":"response.failed","response":{"error":{"message":"upstream failed"}}}\n\n', "upstream failed"],
-])("reports SSE failure %p and restores the account", async (frame, error) => {
+])("reports SSE failure %p and removes the probe group", async (frame, error) => {
   const actions = mockSub2api(() => new Response(frame));
   const result = await runProbe(options, new AbortController().signal);
   expect(result).toMatchObject({ exitCode: 1, results: [{ status: 200, error }] });
-  expect(actions).toEqual([move, "confirm group", "request", { schedulable: true }, restore]);
+  expect(actions).toEqual([add, "confirm group", "request", remove]);
 });
 
 const tickAt = "2026-11-19T12:00:00.000Z";
@@ -328,7 +335,7 @@ test("starts with saved keys and group, keeps them in flight, and waits for rest
       expect(running).toMatchObject({ id: 1, request: probeRequest, startedAt: tickAt, finishedAt: null,
         error: null, exitCode: null, cancelled: false, results: [{ accountId: 135, requestNumber: 1, status: 200 }] });
       expect(running.logs).toEqual([
-        { ts: tickAt, message: `Account 135 (test account): moving to ${groupName}` },
+        { ts: tickAt, message: `Account 135 (test account): adding to ${groupName}` },
         { ts: tickAt, message: "Account 135: request 1/2" },
         { ts: tickAt, message: "Account 135: request 2/2" },
       ]);
@@ -354,7 +361,7 @@ test("starts with saved keys and group, keeps them in flight, and waits for rest
       const finished = await read();
       expect(finished).toMatchObject({ cancelled: true, finishedAt: tickAt, exitCode: 1, error: null,
         results: [{ requestNumber: 1 }, { requestNumber: 2, error: expect.any(String) }] });
-      expect(actions).toEqual([move, "confirm group", "request", "request", { schedulable: true }, restore]);
+      expect(actions).toEqual([add, "confirm group", "request", "request", remove]);
       expect((await api.post("/api/probe/cancel")).status).toBe(409);
     } finally {
       releaseRestore.resolve();
@@ -399,16 +406,16 @@ test("the CLI uses SQLite keys and group and prints progress, the results table,
     const { stdout, stderr, exitCode } = await runProbeCli(path, upstream.url.href);
     expect(exitCode).toBe(0);
     expect(stderr).toBe(
-      `Account 135 (test account): moving to ${groupName}\n` +
+      `Account 135 (test account): adding to ${groupName}\n` +
       "Account 135: request 1/1\n" +
-      "Account 135: restoring scheduling and group bindings\n",
+      `Account 135: removing from ${groupName}\n`,
     );
     expect(stdout.replace(/\d+\.\d{3}/g, "0.000")).toBe(
       "Account  Name          Request #  HTTP  First-token s  Total s  Output / error\n" +
       "135      test account  1          200   0.000          0.000    Hello world\n\n" +
       "Account 135 (request 1)\nHello world\n",
     );
-    expect(actions).toEqual([move, "confirm group", "request", { schedulable: true }, restore]);
+    expect(actions).toEqual([add, "confirm group", "request", remove]);
   } finally {
     upstream.stop(true);
     await rm(directory, { recursive: true, force: true });

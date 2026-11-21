@@ -166,7 +166,7 @@ export function SettingsForm({ status, onSaved, onUnauthorized }: { status: Stat
         <label className="setting text-setting">
           <span className="setting-k">测试分组名</span>
           <input required spellCheck={false} value={draft.probeGroupName} onChange={(event) => setDraft({ ...draft, probeGroupName: event.target.value })} />
-          <span className="setting-hint">提示词测试会把账号临时挪进这个分组。没有就自动建；要是已有，必须是测试专用的。</span>
+          <span className="setting-hint">提示词测试会把账号临时加入这个分组，测完移出。没有就自动建；要是已有，必须是测试专用的。</span>
         </label>
       </fieldset>
 
